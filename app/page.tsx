@@ -371,7 +371,10 @@ export default function App() {
       t: Task = {
         id: crypto.randomUUID(),
         title: "새 작업",
-        step: fileIds.length || templateId ? 2 : 1,
+        // A task created from the home screen intentionally has no source yet.
+        // It must open the writing/voice screen instead of getting stuck on
+        // the optional source-selection step.
+        step: 2,
         fileIds,
         templateId,
         request: "",
