@@ -1,0 +1,134 @@
+.filelist label > div strong {
+  font-size: 13px;
+  margin-top: 7px;
+  color: #263b5e;
+}
+.filelist label > div small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+.warn {
+  color: #a14d00 !important;
+}
+.cards label {
+  display: flex;
+  position: relative;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 16px;
+  cursor: pointer;
+}
+.cards label input {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+}
+.cards label span {
+  font-size: 13px;
+  color: var(--muted);
+}
+.cards label.templatePicked {
+  border: 2px solid var(--blue);
+  background: #f4f8ff;
+}
+.templatePreview {
+  border: 1px solid #bcd3fb;
+  background: #f7faff;
+  border-radius: 14px;
+  padding: 17px;
+  margin-top: 14px;
+}
+.templatePreview p {
+  margin: 7px 0;
+  color: var(--muted);
+}
+.workNav {
+  position: sticky;
+  bottom: 10px;
+  margin-top: 24px;
+  background: #fff;
+  border: 1px solid #dde5ef;
+  box-shadow: 0 8px 28px #0f172a18;
+  border-radius: 13px;
+  padding: 12px;
+  display: flex;
+  justify-content: space-between;
+  z-index: 4;
+}
+.workNav button {
+  border: 1px solid #dde5ef;
+  background: #fff;
+  border-radius: 9px;
+  padding: 11px 18px;
+}
+.workNav .primary {
+  background: #1768e5;
+  color: #fff;
+  border-color: #1768e5;
+}
+.workNav button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.trashButton {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  padding: 7px;
+}
+.repeatButton {
+  margin-left: auto;
+  color: #1768e5;
+  background: #eef5ff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.archiveRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid #dde5ef;
+  border-radius: 12px;
+  padding: 14px;
+  margin: 9px 0;
+}
+.archiveRow b {
+  color: #1768e5;
+  margin-right: 8px;
+}
+.archiveRow button {
+  border: 1px solid #dde5ef;
+  background: #fff;
+  border-radius: 9px;
+  padding: 8px 13px;
+}
+.mediaWarning {
+  border: 1px solid #f0c36a;
+  background: #fff8df;
+  border-radius: 10px;
+  padding: 10px;
+  color: #704c00;
+}
+.formatChoice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid #dde5ef;
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-top: 16px;
+}
+.formatChoice select {
+  min-width: 230px;
+  border: 1px solid #b8c8dd;
+  border-radius: 9px;
+  background: #fff;
+  padding: 10px;
+}

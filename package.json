@@ -1,1 +1,32 @@
-{"name":"ai-personal-assistant-v2","version":"2.0.0","private":true,"scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"jszip":"^3.10.1","next":"15.5.23","react":"19.2.8","react-dom":"19.2.8","xlsx":"^0.18.5"},"devDependencies":{"@types/node":"22.20.1","@types/react":"19.2.18","@types/react-dom":"19.2.4","typescript":"5.9.3"}}
+{
+  "name": "my-workmate-ai",
+  "version": "4.0.0",
+  "private": true,
+  "packageManager": "npm@10.9.4",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "docx": "^9.7.1",
+    "exceljs": "4.4.0",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.1",
+    "next": "15.5.23",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.2.108",
+    "pptxgenjs": "^4.0.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "fake-indexeddb": "^6.2.5",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3"
+  }
+}
