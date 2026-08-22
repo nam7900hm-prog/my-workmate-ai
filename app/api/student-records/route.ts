@@ -57,7 +57,15 @@ export async function POST(req: NextRequest) {
   const recordType = ["subject", "behavior", "general"].includes(body.recordType)
     ? (body.recordType as keyof typeof TYPE_RULES)
     : "general";
+  const requestedLength = String(body.request || "").match(/(\d{2,3})\s*자/);
+  const targetLength = requestedLength
+    ? Math.max(200, Math.min(500, Number(requestedLength[1])))
+    : null;
+  const lengthGuide = targetLength
+    ? `사용자가 요청한 약 ${targetLength}자를 우선한다. 공백 포함 ${Math.floor(targetLength * 0.9)}자 이상 ${Math.ceil(targetLength * 1.1)}자 이하를 목표로 하되 근거 없는 내용을 보태 글자 수를 채우지 않는다.`
+    : "사용자가 별도 길이를 정하지 않았으므로 각 초안은 200자 이상 500자 이하로 작성한다.";
   const prompt = `당신은 한국 학교 교사를 돕는 생활기록부 초안 작성 비서다. 작성 종류는 ${recordType}이다. ${TYPE_RULES[recordType]} ${COMMON_RULES}
+${lengthGuide}
 사용자 요청=${String(body.request || "").slice(0, 4000)}
 앞 묶음에서 이미 사용한 다음 표현과 문장 구조를 반복하지 않는다: ${JSON.stringify(avoidPhrases).slice(0, 30000)}
 JSON만 반환한다. 형식은 {"students":[{"name":"학생명","source":"원문","factDraft":"1안 관찰 중심","inferredDraft":"2안 성장 중심","recommendedDraft":"3안 AI 추천","inferredParts":["2안에서 교사가 확인할 유추 구절"],"recommendedInferredParts":["3안에서 교사가 확인할 유추 구절"]}]}이다. 학생은 입력 순서와 이름을 그대로 유지한다. 입력=${JSON.stringify(students).slice(0, 90000)}`;

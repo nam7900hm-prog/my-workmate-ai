@@ -9,7 +9,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "docx": "^9.7.1",
+    "docx": "9.7.1",
     "exceljs": "4.4.0",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.1",

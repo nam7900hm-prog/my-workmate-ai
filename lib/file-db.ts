@@ -35,6 +35,17 @@ export async function getFileBlob(id: string): Promise<Blob | undefined> {
   return value;
 }
 
+export async function deleteFileBlob(id: string) {
+  const db = await database();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+  db.close();
+}
+
 export async function storedFile(id: string, name: string, type = "") {
   const blob = await getFileBlob(id);
   return blob ? new File([blob], name, { type: blob.type || type }) : undefined;

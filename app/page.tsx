@@ -22,7 +22,7 @@ import {
 } from "@/lib/store";
 import { analyzeFile } from "@/lib/analyze";
 import { maskText } from "@/lib/privacy";
-import { saveFileBlob, storedFile } from "@/lib/file-db";
+import { deleteFileBlob, saveFileBlob, storedFile } from "@/lib/file-db";
 import { safeExcelFormula } from "@/lib/excel-security";
 import { applyStructuralExcelAction } from "@/lib/excel-structural-actions";
 type UploadList = FileList | File[] | null;
@@ -55,11 +55,14 @@ const steps = [
   ["결과 확인", "다운로드하거나 다시 수정"],
 ];
 function studentRecordType(request: string): Task["studentRecordType"] | null {
-  if (/행발|행동\s*발달|행동\s*특성|종합\s*의견/.test(request))
+  let normalized = request.replace(/성기부/g, "생기부");
+  if (/학생|진로|교사|생활기록부|생기부/.test(normalized))
+    normalized = normalized.replace(/세탁|세택|세텍|세턱/g, "세특");
+  if (/행발|행동\s*발달|행동\s*특성|종합\s*의견/.test(normalized))
     return "behavior";
-  if (/세특|세부\s*특기|세부\s*능력|교과.*특기/.test(request))
+  if (/세특|세부\s*특기|세부\s*능력|교과.*특기/.test(normalized))
     return "subject";
-  if (/생기부|생활\s*기록부/.test(request)) return "general";
+  if (/생기부|생활\s*기록부/.test(normalized)) return "general";
   return null;
 }
 function studentRecordLabel(type: Task["studentRecordType"] | null) {
@@ -1728,6 +1731,63 @@ export default function App() {
                   : s;
               })
             }
+            purgeFile={async (id) => {
+              if (!confirm("이 자료는 복원할 수 없습니다. 영구 삭제하시겠습니까?"))
+                return;
+              await deleteFileBlob(id);
+              rawFiles.current.delete(id);
+              update((s) => ({
+                ...s,
+                trash: {
+                  ...s.trash,
+                  files: s.trash.files.filter((item) => item.id !== id),
+                },
+              }));
+              setNotice("자료를 영구 삭제했습니다.");
+            }}
+            purgeTemplate={async (id) => {
+              if (!confirm("이 양식은 복원할 수 없습니다. 영구 삭제하시겠습니까?"))
+                return;
+              await deleteFileBlob(id);
+              rawFiles.current.delete(id);
+              update((s) => ({
+                ...s,
+                trash: {
+                  ...s.trash,
+                  templates: s.trash.templates.filter((item) => item.id !== id),
+                },
+              }));
+              setNotice("양식을 영구 삭제했습니다.");
+            }}
+            purgeTask={(id) => {
+              if (!confirm("이 작업은 복원할 수 없습니다. 영구 삭제하시겠습니까?"))
+                return;
+              update((s) => ({
+                ...s,
+                trash: {
+                  ...s.trash,
+                  tasks: s.trash.tasks.filter((item) => item.id !== id),
+                },
+              }));
+              setNotice("작업을 영구 삭제했습니다.");
+            }}
+            emptyTrash={async () => {
+              const count =
+                store.trash.files.length +
+                store.trash.templates.length +
+                store.trash.tasks.length;
+              if (!count || !confirm(`${count}개 항목을 모두 영구 삭제하시겠습니까? 복원할 수 없습니다.`))
+                return;
+              for (const item of [...store.trash.files, ...store.trash.templates]) {
+                await deleteFileBlob(item.id);
+                rawFiles.current.delete(item.id);
+              }
+              update((s) => ({
+                ...s,
+                trash: { files: [], templates: [], tasks: [] },
+              }));
+              setNotice("보관함을 모두 비웠습니다.");
+            }}
           />
         )}
         {view === "settings" && (
@@ -1780,6 +1840,29 @@ export default function App() {
             execute={executeTask}
             downloadWork={downloadWorkResult}
             addFiles={addFiles}
+            newBlankTask={() => newTask()}
+            archiveResult={() => {
+              if (!task) return;
+              update((s) => ({
+                ...s,
+                tasks: s.tasks.filter((item) => item.id !== task.id),
+                archive: [task, ...s.archive.filter((item) => item.id !== task.id)],
+              }));
+              setTaskId("");
+              go("archive");
+              setNotice("완료 결과를 보관함에 저장했습니다.");
+            }}
+            deleteResult={() => {
+              if (!task || !confirm("이 결과를 삭제된 작업으로 옮길까요?")) return;
+              update((s) => ({
+                ...s,
+                tasks: s.tasks.filter((item) => item.id !== task.id),
+                trash: { ...s.trash, tasks: [task, ...s.trash.tasks] },
+              }));
+              setTaskId("");
+              go("archive");
+              setNotice("결과를 삭제된 작업으로 옮겼습니다. 보관함에서 복원하거나 영구 삭제할 수 있습니다.");
+            }}
           />
         )}
       </main>
@@ -1799,6 +1882,10 @@ export default function App() {
           <div className="consent">
             <h2>인공지능 분석 안내</h2>
             <p>이 작업은 OpenAI API를 사용합니다.</p>
+            <p>
+              확인한 작업에 필요한 요청만 보내며 응답이 끝나면 통신도 끝납니다.
+              작업이 끝난 뒤 계속 연결되거나 비용이 발생하지 않습니다.
+            </p>
             <p>
               이름과 개인정보는 자동으로 가린 뒤 작업에 필요한 내용만
               전송합니다.
@@ -1874,6 +1961,7 @@ function Home({
   );
 }
 function Help() {
+  const [topic, setTopic] = useState("student");
   return (
     <Section
       title="사용설명"
@@ -1907,6 +1995,71 @@ function Help() {
           추가할 수 있습니다.
         </p>
       </div>
+      <label className="helpSelect">
+        <b>설명할 기능 선택</b>
+        <select value={topic} onChange={(event) => setTopic(event.target.value)}>
+          <option value="student">학생 생활기록부 작성</option>
+          <option value="excel">Excel 자료 분석과 새 파일 만들기</option>
+          <option value="beginner">Excel 왕초보 교실</option>
+          <option value="pdf">PDF와 스캔 활동지 사용</option>
+          <option value="api">API 사용과 비용</option>
+          <option value="result">결과 저장과 삭제</option>
+        </select>
+      </label>
+      <div className="helpTopics">
+        <details open={topic === "student"} hidden={topic !== "student"}>
+          <summary>학생 생활기록부 작성</summary>
+          <div>
+            <p><b>준비 자료</b> Excel은 학생 이름과 활동 내용 또는 소감문이 있는 열을 포함합니다. PDF는 글자 PDF와 스캔 활동지를 사용할 수 있습니다.</p>
+            <p><b>요청 예시</b> 이 자료의 학생별 세특을 약 300자로 작성해줘. 교사가 확인할 수 있는 활동 근거를 사용하고 쉼표는 쓰지 마.</p>
+            <p><b>결과</b> 최대 200명까지 1안 관찰 중심과 2안 성장 중심과 3안 최종 추천을 보여 줍니다. 교사가 학생별로 선택하고 수정한 뒤 파일로 받습니다.</p>
+            <p><b>구분</b> 세특은 수업과 교과 활동 중심입니다. 행동발달상황은 지속적으로 관찰한 책임감과 협력 및 생활 태도 중심입니다. 활동 소감은 학생이 직접 말하는 글로 작성합니다.</p>
+          </div>
+        </details>
+        <details open={topic === "excel"} hidden={topic !== "excel"}>
+          <summary>Excel 자료 분석과 새 파일 만들기</summary>
+          <div>
+            <p><b>분석</b> 시트와 행과 열과 제목과 날짜와 숫자와 문자와 수식과 반복값과 표 영역과 서식을 확인합니다.</p>
+            <p><b>요청 예시 1</b> 부서별 예산에서 행사별 사용액을 빼고 오른쪽 끝에 잔액을 계산해줘.</p>
+            <p><b>요청 예시 2</b> 월요일 2학년 1반 수학 5교시 수업을 충돌 없이 교체할 후보를 찾아줘.</p>
+            <p><b>요청 예시 3</b> 세로로 정리된 자료에서 학급은 가로로 두고 과목과 교사명과 수업내용은 왼쪽에 한 번만 표시해줘.</p>
+            <p><b>요청 예시 4</b> 표 밖에 입력한 교사 이름과 같은 감독표 셀을 노란색으로 표시하고 특정 담당자는 파란색으로 표시해줘.</p>
+            <p>원본은 그대로 보존하고 작업 사본과 새 결과 파일을 만듭니다.</p>
+          </div>
+        </details>
+        <details open={topic === "beginner"} hidden={topic !== "beginner"}>
+          <summary>Excel 왕초보 교실</summary>
+          <div>
+            <p>결과 화면의 <b>작업 설명과 Excel 학습</b>에서 실제로 사용한 방법을 확인합니다.</p>
+            <p><b>어떻게 만들었나요</b>는 원자료의 어느 열을 어떻게 바꿨는지 설명합니다.</p>
+            <p><b>함수 배우기</b>는 실제 셀에 들어간 계산식을 보여 줍니다.</p>
+            <p><b>왕초보 따라하기</b>는 셀 클릭부터 함수 입력과 범위 선택과 아래 행 복사까지 순서대로 안내합니다. Microsoft Excel과 Google Sheets 방법을 따로 볼 수 있습니다.</p>
+          </div>
+        </details>
+        <details open={topic === "pdf"} hidden={topic !== "pdf"}>
+          <summary>PDF와 스캔 활동지 사용</summary>
+          <div>
+            <p>글자가 들어 있는 PDF는 바로 읽습니다. 손글씨 활동지를 스캔한 PDF는 문자 인식을 거쳐 읽으므로 학생 이름과 문장을 교사가 다시 확인해야 합니다.</p>
+            <p>여러 학생의 스캔 활동지는 학생 이름이 각 글과 명확히 연결되도록 한 페이지 또는 한 구역씩 구분하는 것이 좋습니다.</p>
+          </div>
+        </details>
+        <details open={topic === "api"} hidden={topic !== "api"}>
+          <summary>API 사용과 비용</summary>
+          <div>
+            <p>API는 앱을 열어 두는 동안 계속 연결되지 않습니다. 사용자가 다음 또는 실행을 누르고 확인한 작업에만 사용됩니다.</p>
+            <p>한 작업 안에서도 계획 작성과 사진·음성 읽기와 학생 묶음 생성처럼 필요한 단계가 여러 번이면 여러 요청이 발생할 수 있습니다. 각 응답이 끝나면 통신도 끝납니다.</p>
+            <p>대기 중이거나 결과를 읽거나 직접 수정하거나 파일을 다운로드할 때는 API 사용료가 발생하지 않습니다. 설정의 <b>요청할 때만 사용</b> 표시로 확인할 수 있습니다.</p>
+          </div>
+        </details>
+        <details open={topic === "result"} hidden={topic !== "result"}>
+          <summary>결과 저장과 삭제</summary>
+          <div>
+            <p>결과 확인 후 보관함 저장과 결과 삭제와 새 작업 시작 중 하나를 선택합니다.</p>
+            <p>삭제한 결과는 보관함에서 복원할 수 있습니다. 더 이상 필요하지 않으면 보관함에서 영구 삭제합니다.</p>
+            <p>설명 단계에서는 입력한 글 지우기를 눌러 현재 입력문만 비울 수 있습니다.</p>
+          </div>
+        </details>
+      </div>
     </Section>
   );
 }
@@ -1929,6 +2082,7 @@ function Files({
     { id: string; name: string; modifiedTime: string }[]
   >([]);
   const [googlePicked, setGooglePicked] = useState<string[]>([]);
+  const [googleQuery, setGoogleQuery] = useState("");
   const [googleMessage, setGoogleMessage] = useState("");
   const [googleNeedsLogin, setGoogleNeedsLogin] = useState(false);
   async function loadGoogleSheets() {
@@ -1970,8 +2124,10 @@ function Files({
     const importedIds = await add(imported);
     setSelected(Array.from(new Set([...selected, ...importedIds])));
     setGooglePicked([]);
+    setGoogleFiles([]);
+    setGoogleQuery("");
     setGoogleMessage(
-      `${imported.length}개 Google Sheets를 내 자료에 추가하고 작업 자료로 선택했습니다.`,
+      `${imported.length}개만 내 자료에 추가하고 작업 자료로 선택했습니다. 잘못 가져왔으면 아래의 자료 삭제를 누르세요.`,
     );
   }
   async function disconnectGoogle() {
@@ -2003,6 +2159,25 @@ function Files({
         )}
         {!!googleFiles.length && (
           <>
+            <div className="googleTools">
+              <input
+                className="googleSearch"
+                type="search"
+                value={googleQuery}
+                onChange={(event) => setGoogleQuery(event.target.value)}
+                placeholder="시트 이름 검색"
+              />
+              <button
+                onClick={() => {
+                  setGoogleFiles([]);
+                  setGooglePicked([]);
+                  setGoogleQuery("");
+                  setGoogleMessage("Google Sheets 목록을 닫았습니다.");
+                }}
+              >
+                목록 닫기
+              </button>
+            </div>
             <div className="googlePickBar">
               <span>{googlePicked.length}개 선택</span>
               <button disabled={!googlePicked.length} onClick={importGoogleSheets}>
@@ -2010,7 +2185,11 @@ function Files({
               </button>
             </div>
             <div className="filelist">
-              {googleFiles.map((file) => (
+              {googleFiles
+                .filter((file) =>
+                  file.name.toLocaleLowerCase().includes(googleQuery.trim().toLocaleLowerCase()),
+                )
+                .map((file) => (
                 <label
                   key={file.id}
                   className={googlePicked.includes(file.id) ? "picked" : ""}
@@ -2033,7 +2212,7 @@ function Files({
                     </span>
                   </div>
                 </label>
-              ))}
+                ))}
             </div>
             <button onClick={disconnectGoogle}>Google 연결 해제</button>
           </>
@@ -2092,7 +2271,7 @@ function Files({
                 remove(f.id);
               }}
             >
-              삭제
+              자료 삭제
             </button>
           </label>
         ))}
@@ -2259,12 +2438,24 @@ function Archive({
   restoreFile,
   restoreTemplate,
   restoreTask,
+  purgeFile,
+  purgeTemplate,
+  purgeTask,
+  emptyTrash,
 }: {
   store: Store;
   restoreFile: (id: string) => void;
   restoreTemplate: (id: string) => void;
   restoreTask: (id: string) => void;
+  purgeFile: (id: string) => void;
+  purgeTemplate: (id: string) => void;
+  purgeTask: (id: string) => void;
+  emptyTrash: () => void;
 }) {
+  const trashCount =
+    store.trash.files.length +
+    store.trash.templates.length +
+    store.trash.tasks.length;
   const empty =
     !store.trash.files.length &&
     !store.trash.templates.length &&
@@ -2273,14 +2464,27 @@ function Archive({
   return (
     <Section
       title="보관함"
-      sub="삭제한 자료와 양식을 확인한 뒤 원래 위치로 복원할 수 있습니다."
+      sub="삭제한 자료와 양식을 복원하거나 영구 삭제할 수 있습니다."
     >
+      {!!trashCount && (
+        <div className="archiveActions">
+          <span>삭제된 항목 {trashCount}개</span>
+          <button className="dangerButton" onClick={emptyTrash}>
+            보관함 비우기
+          </button>
+        </div>
+      )}
       {store.trash.files.map((item) => (
         <div className="archiveRow" key={item.id}>
           <span>
             <b>자료</b> {item.name}
           </span>
-          <button onClick={() => restoreFile(item.id)}>복원</button>
+          <div>
+            <button onClick={() => restoreFile(item.id)}>복원</button>
+            <button className="dangerButton" onClick={() => purgeFile(item.id)}>
+              영구 삭제
+            </button>
+          </div>
         </div>
       ))}
       {store.trash.templates.map((item) => (
@@ -2288,7 +2492,12 @@ function Archive({
           <span>
             <b>양식</b> {item.name}
           </span>
-          <button onClick={() => restoreTemplate(item.id)}>복원</button>
+          <div>
+            <button onClick={() => restoreTemplate(item.id)}>복원</button>
+            <button className="dangerButton" onClick={() => purgeTemplate(item.id)}>
+              영구 삭제
+            </button>
+          </div>
         </div>
       ))}
       {store.trash.tasks.map((item) => (
@@ -2296,7 +2505,12 @@ function Archive({
           <span>
             <b>작업</b> {item.title}
           </span>
-          <button onClick={() => restoreTask(item.id)}>복원</button>
+          <div>
+            <button onClick={() => restoreTask(item.id)}>복원</button>
+            <button className="dangerButton" onClick={() => purgeTask(item.id)}>
+              영구 삭제
+            </button>
+          </div>
         </div>
       ))}
       {store.archive.map((item) => (
@@ -2349,7 +2563,15 @@ function Settings({
               ? "글과 자료를 이해하고 결과를 만들 준비가 되었습니다."
               : "아직 연결 전입니다. 연결 전에도 자료 분석과 저장 및 백업은 사용할 수 있습니다."}
         </span>
-        <i>{aiReady ? "사용 준비됨" : "연결 전"}</i>
+        <i>{aiReady ? "요청할 때만 사용" : "연결 전"}</i>
+      </div>
+      <div className="setting">
+        <b>API 사용 방식</b>
+        <span>
+          다음 또는 실행을 누르고 사용을 확인한 작업만 전송합니다. 응답이 끝나면
+          연결도 종료되며 대기 중에는 사용료가 발생하지 않습니다.
+        </span>
+        <i>상시 연결 아님</i>
       </div>
       <div className="setting">
         <b>자동저장</b>
@@ -2460,6 +2682,9 @@ function TaskFlow({
   execute,
   downloadWork,
   addFiles,
+  newBlankTask,
+  archiveResult,
+  deleteResult,
 }: {
   task: Task;
   store: Store;
@@ -2481,6 +2706,9 @@ function TaskFlow({
   execute: () => void;
   downloadWork: () => void;
   addFiles: (list: UploadList, asTemplate?: boolean) => Promise<string[]>;
+  newBlankTask: () => void;
+  archiveResult: () => void;
+  deleteResult: () => void;
 }) {
   const [q, setQ] = useState("");
   const recordType = studentRecordType(task.request);
@@ -2553,6 +2781,21 @@ function TaskFlow({
             }
             placeholder="예: 학생 소감문을 학생 이름별로 구분하고 서로 다른 생기부 문구 초안으로 정리해줘."
           />
+          <button
+            disabled={!task.request.trim()}
+            onClick={() => {
+              if (!confirm("현재 입력한 글만 지울까요?")) return;
+              if (listening) stopVoice();
+              change({
+                request: "",
+                title: "새 작업",
+                conversation: [],
+                plan: undefined,
+              });
+            }}
+          >
+            입력한 글 지우기
+          </button>
           <div className="voicebar">
             {listening ? (
               <button className="stop" onClick={stopVoice}>
@@ -2605,11 +2848,14 @@ function TaskFlow({
             onChange={(e) => setQ(e.target.value)}
             placeholder="답변을 글로 적거나 마이크로 말하세요."
           />
+          <button disabled={!q.trim()} onClick={() => setQ("")}>
+            답변 지우기
+          </button>
         </>
       )}
       {task.step === 4 && (
         <>
-          <PlanView p={task.plan} />
+          <PlanView p={task.plan} student={isStudent} />
           <label className="formatChoice">
             <b>결과 파일 형식</b>
             <select
@@ -2645,7 +2891,7 @@ function TaskFlow({
                 <li>
                   2안은 확인된 근거에서 이어지는 성장과 발전 가능성을 강조합니다.
                 </li>
-                <li>3안은 1안과 2안을 자연스럽게 다시 구성한 AI 추천문입니다.</li>
+                <li>3안은 1안과 2안을 자연스럽게 다시 구성한 최종 추천문입니다.</li>
                 <li>
                   쉼표는 사용하지 않으며 모든 완결 문장을 마침표로 끝냅니다.
                 </li>
@@ -2717,6 +2963,13 @@ function TaskFlow({
             <button onClick={downloadWork}>다운로드</button>
           </div>
         ))}
+      {task.step === 6 && (
+        <div className="workNav">
+          <button onClick={archiveResult}>결과를 보관함에 저장</button>
+          <button className="dangerButton" onClick={deleteResult}>결과 삭제</button>
+          <button className="primary" onClick={newBlankTask}>새 작업 시작</button>
+        </div>
+      )}
       <div className="workNav">
         <button
           disabled={task.step === 1}
@@ -2922,7 +3175,7 @@ function StudentReview({
           <button onClick={() => choose("inferred")}>2안 선택</button>
         </article>
         <article className={d.selected === "recommended" ? "picked" : ""}>
-          <h3>3안 AI 추천</h3>
+          <h3>3안 최종 추천</h3>
           <p>{d.recommendedDraft || "3안은 새로 생성할 때 표시됩니다."}</p>
           <small>{Array.from((d.recommendedDraft || "").trim()).length}자</small>
           {!!d.recommendedInferredParts?.length && (
@@ -2995,8 +3248,25 @@ function StudentReview({
     </div>
   );
 }
-function PlanView({ p }: { p?: Plan }) {
+function PlanView({ p, student = false }: { p?: Plan; student?: boolean }) {
   if (!p) return <Empty text="작업계획이 없습니다." />;
+  if (student)
+    return (
+      <div className="plan">
+        <h2>작업계획을 확인하세요</h2>
+        <dl>
+          <dt>이해한 요청</dt>
+          <dd>{p.understanding}</dd>
+          <dt>사용 자료</dt>
+          <dd>{p.materials.join(" · ") || "입력한 활동 내용"}</dd>
+          <dt>제시할 결과</dt>
+          <dd>1안 관찰 중심 · 2안 성장 중심 · 3안 최종 추천</dd>
+          <dt>다음 과정</dt>
+          <dd>세 가지 초안 생성 → 교사 선택·수정 → 문장 검증</dd>
+        </dl>
+        {p.limitation && <p className="warning">{p.limitation}</p>}
+      </div>
+    );
   return (
     <div className="plan">
       <h2>작업계획을 확인하세요</h2>
