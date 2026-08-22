@@ -1967,9 +1967,12 @@ function Files({
         }),
       );
     }
-    await add(imported);
+    const importedIds = await add(imported);
+    setSelected(Array.from(new Set([...selected, ...importedIds])));
     setGooglePicked([]);
-    setGoogleMessage(`${imported.length}개 Google Sheets를 내 자료에 추가했습니다.`);
+    setGoogleMessage(
+      `${imported.length}개 Google Sheets를 내 자료에 추가하고 작업 자료로 선택했습니다.`,
+    );
   }
   async function disconnectGoogle() {
     await fetch("/api/google/disconnect", { method: "POST" });
@@ -2000,9 +2003,18 @@ function Files({
         )}
         {!!googleFiles.length && (
           <>
+            <div className="googlePickBar">
+              <span>{googlePicked.length}개 선택</span>
+              <button disabled={!googlePicked.length} onClick={importGoogleSheets}>
+                선택한 시트 가져오기
+              </button>
+            </div>
             <div className="filelist">
               {googleFiles.map((file) => (
-                <label key={file.id}>
+                <label
+                  key={file.id}
+                  className={googlePicked.includes(file.id) ? "picked" : ""}
+                >
                   <input
                     type="checkbox"
                     checked={googlePicked.includes(file.id)}
@@ -2023,9 +2035,6 @@ function Files({
                 </label>
               ))}
             </div>
-            <button disabled={!googlePicked.length} onClick={importGoogleSheets}>
-              선택한 시트 가져오기
-            </button>
             <button onClick={disconnectGoogle}>Google 연결 해제</button>
           </>
         )}
@@ -2035,9 +2044,12 @@ function Files({
         {store.files.map((f) => (
           <label
             key={f.id}
-            className={
-              ["unsupported", "error"].includes(f.status) ? "unsupported" : ""
-            }
+            className={[
+              ["unsupported", "error"].includes(f.status) ? "unsupported" : "",
+              selected.includes(f.id) ? "picked" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
           >
             <input
               type="checkbox"
