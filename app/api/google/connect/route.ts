@@ -7,7 +7,9 @@ export async function GET(req: NextRequest) {
       { status: 503 },
     );
   const state = crypto.randomUUID();
-  const redirectUri = `${req.nextUrl.origin}/api/google/callback`;
+  const redirectUri =
+    process.env.GOOGLE_REDIRECT_URI ||
+    `${req.nextUrl.origin}/api/google/callback`;
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.search = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID,

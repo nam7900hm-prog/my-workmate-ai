@@ -6,6 +6,9 @@ export async function GET(req: NextRequest) {
   const state = req.nextUrl.searchParams.get("state");
   if (!code || !state || state !== req.cookies.get("mw_google_state")?.value)
     return NextResponse.redirect(`${req.nextUrl.origin}/?google=failed`);
+  const redirectUri =
+    process.env.GOOGLE_REDIRECT_URI ||
+    `${req.nextUrl.origin}/api/google/callback`;
   const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -13,7 +16,7 @@ export async function GET(req: NextRequest) {
       code,
       client_id: process.env.GOOGLE_CLIENT_ID || "",
       client_secret: process.env.GOOGLE_CLIENT_SECRET || "",
-      redirect_uri: `${req.nextUrl.origin}/api/google/callback`,
+      redirect_uri: redirectUri,
       grant_type: "authorization_code",
     }),
   });

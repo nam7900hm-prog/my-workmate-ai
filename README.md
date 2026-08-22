@@ -80,6 +80,7 @@ OPENAI_TRANSCRIBE_MODEL=gpt-4o-mini-transcribe
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GOOGLE_TOKEN_SECRET=
+GOOGLE_REDIRECT_URI=https://my-workmate-ai.vercel.app/api/google/callback
 ```
 
 OpenAI API 요금은 ChatGPT 구독과 별도이며 실제 사용량에 따라 API 계정 잔액에서 차감됩니다.
@@ -96,7 +97,8 @@ Google Sheets 연결은 개인 사용 기준의 읽기 전용 기능입니다. �
 6. 승인된 리디렉션 URI에 `https://내-버셀-주소.vercel.app/api/google/callback`을 등록합니다.
 7. Vercel 환경변수에 `GOOGLE_CLIENT_ID`와 `GOOGLE_CLIENT_SECRET`을 등록합니다.
 8. `GOOGLE_TOKEN_SECRET`에는 임의의 32자 이상 비밀 문자열을 등록합니다.
-9. 환경변수 저장 후 Vercel에서 다시 배포합니다.
+9. `GOOGLE_REDIRECT_URI`에는 `https://my-workmate-ai.vercel.app/api/google/callback`을 등록합니다.
+10. 환경변수 저장 후 Vercel에서 다시 배포합니다.
 
 로컬 시험용 리디렉션 URI는 `http://localhost:3000/api/google/callback`입니다. Google 접근 토큰은 브라우저 JavaScript나 로컬 저장소에 노출하지 않고 서버의 암호화된 HttpOnly 쿠키에만 보관합니다. 연결을 해제하면 해당 쿠키를 삭제합니다.
 
