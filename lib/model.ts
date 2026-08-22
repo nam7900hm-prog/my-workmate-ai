@@ -4,8 +4,10 @@ export type StudentDraft = {
   source: string;
   factDraft: string;
   inferredDraft: string;
+  recommendedDraft?: string;
   inferredParts: string[];
-  selected?: "fact" | "inferred" | "merged";
+  recommendedInferredParts?: string[];
+  selected?: "fact" | "inferred" | "recommended" | "merged";
   finalText: string;
   reviewed: boolean;
 };
@@ -50,6 +52,37 @@ export type WorkResult = {
         range: string;
         formula: string;
         color?: string;
+      }
+    | {
+        type: "dataValidation";
+        sheet: string;
+        range: string;
+        values?: string[];
+        sourceRange?: string;
+        prompt?: string;
+      }
+    | {
+        type: "sort";
+        sheet: string;
+        range: string;
+        column: number;
+        order: "asc" | "desc";
+        hasHeader?: boolean;
+      }
+    | { type: "filter"; sheet: string; range: string }
+    | {
+        type: "removeDuplicates";
+        sheet: string;
+        range: string;
+        columns: number[];
+        hasHeader?: boolean;
+      }
+    | {
+        type: "transpose";
+        sheet: string;
+        range: string;
+        targetSheet: string;
+        targetCell: string;
       }
   >;
 };
@@ -113,6 +146,7 @@ export type Task = {
   outputFormat?: "auto" | "xlsx" | "docx" | "pdf" | "pptx" | "txt" | "csv";
   studentDrafts?: StudentDraft[];
   studentValidation?: string[];
+  studentRecordType?: "subject" | "behavior" | "general";
   apiConsent?: { approvedAt: string; fileIds: string[]; masked: boolean };
   createdAt: string;
   updatedAt: string;

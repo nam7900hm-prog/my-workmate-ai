@@ -19,7 +19,7 @@
     "pptxgenjs": "^4.0.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@types/node": "22.20.1",
@@ -28,5 +28,10 @@
     "fake-indexeddb": "^6.2.5",
     "prettier": "3.6.2",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "postcss": "8.5.26",
+    "sharp": "0.35.3",
+    "uuid": "11.1.1"
   }
 }

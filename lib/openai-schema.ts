@@ -108,6 +108,83 @@ export function normalizeWorkResult(value: unknown): WorkResult {
           formula: action.formula,
           color,
         });
+      if (
+        action.type === "dataValidation" &&
+        typeof action.range === "string"
+      ) {
+        const values = strings(action.values).slice(0, 1000);
+        const sourceRange =
+          typeof action.sourceRange === "string"
+            ? action.sourceRange
+            : undefined;
+        if (values.length || sourceRange)
+          excelActions.push({
+            type: "dataValidation" as const,
+            sheet: action.sheet,
+            range: action.range,
+            values,
+            sourceRange,
+            prompt:
+              typeof action.prompt === "string" ? action.prompt : undefined,
+          });
+      }
+      if (
+        action.type === "sort" &&
+        typeof action.range === "string" &&
+        typeof action.column === "number" &&
+        Number.isInteger(action.column) &&
+        action.column >= 1
+      )
+        excelActions.push({
+          type: "sort" as const,
+          sheet: action.sheet,
+          range: action.range,
+          column: action.column,
+          order: action.order === "desc" ? "desc" : "asc",
+          hasHeader: action.hasHeader !== false,
+        });
+      if (action.type === "filter" && typeof action.range === "string")
+        excelActions.push({
+          type: "filter" as const,
+          sheet: action.sheet,
+          range: action.range,
+        });
+      if (
+        action.type === "removeDuplicates" &&
+        typeof action.range === "string"
+      ) {
+        const columns = Array.isArray(action.columns)
+          ? action.columns
+              .filter(
+                (column): column is number =>
+                  typeof column === "number" &&
+                  Number.isInteger(column) &&
+                  column >= 1,
+              )
+              .slice(0, 100)
+          : [];
+        if (columns.length)
+          excelActions.push({
+            type: "removeDuplicates" as const,
+            sheet: action.sheet,
+            range: action.range,
+            columns,
+            hasHeader: action.hasHeader !== false,
+          });
+      }
+      if (
+        action.type === "transpose" &&
+        typeof action.range === "string" &&
+        typeof action.targetSheet === "string" &&
+        typeof action.targetCell === "string"
+      )
+        excelActions.push({
+          type: "transpose" as const,
+          sheet: action.sheet,
+          range: action.range,
+          targetSheet: action.targetSheet,
+          targetCell: action.targetCell,
+        });
     }
   return {
     kind,

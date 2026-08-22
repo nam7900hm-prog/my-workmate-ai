@@ -1,0 +1,6 @@
+.learningBox { margin-top: 22px; }
+.learningTabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.learningTabs button { padding: 9px 12px; }
+.formulaCard { border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 10px 0; }
+.formulaCard code { display: block; margin: 10px 0; padding: 12px; background: #101d3c; color: white; border-radius: 8px; overflow-wrap: anywhere; }
+.formulaCard li { margin: 9px 0; line-height: 1.55; }

@@ -3,17 +3,31 @@ import { openAIError, parseOpenAIJson } from "@/lib/openai-response";
 import { normalizeStudentSentence } from "@/lib/student-text";
 import { openAIUrl } from "@/lib/openai-config";
 
-const RULES = `학생 생활기록부 초안 작성 규칙:
+const COMMON_RULES = `학생 생활기록부 초안 작성 규칙:
 1. 입력된 학생 글에 없는 성과와 행동과 결과는 사실처럼 만들지 않는다.
 2. 쉼표 문자를 절대 사용하지 않는다. 모든 완결 문장은 마침표로 끝낸다.
 3. 영어 고유명사와 기술 용어는 가능한 범위에서 자연스러운 한글 의미로 풀어 쓴다.
 4. 학생별 동기와 선택과 행동과 성취와 변화와 후속 관심 중 자료에서 확인되는 요소만 사용한다.
 5. 우수함과 탁월함과 성실함 같은 추상적 칭찬을 근거 없이 사용하지 않는다.
 6. 학생 수준을 벗어난 전문 지식이나 연구를 만들어내지 않는다.
-7. 사실 중심 초안은 학생 글에서 직접 확인되는 내용만 교사 서술형으로 바꾼다.
-8. 관찰 가능성 초안은 학생 글에서 자연스럽게 이어지는 행동만 조심스럽게 제안한다. 유추한 구절은 inferredParts에 그대로 적는다.
-9. 두 초안은 시작 방식과 문장 구조와 마무리 의미가 달라야 한다.
-10. 학생 사이의 문장과 의미와 종결 표현이 반복되지 않도록 한다.`;
+7. 학생 소감문은 보조 근거이며 교사가 기록한 관찰 내용과 실제 수업 활동과 결과물을 우선한다.
+8. 1안은 교사가 확인할 수 있는 관찰과 활동 근거 중심으로 작성한다.
+9. 2안은 확인된 근거에서 이어지는 변화와 발전 가능성을 강조한다. 유추한 구절은 inferredParts에 그대로 적는다.
+10. 3안은 1안과 2안을 단순 연결하지 말고 관찰 근거와 성장 내용을 한 사람의 기록처럼 자연스럽게 다시 작성한다. 유추한 구절은 recommendedInferredParts에 적는다.
+11. 세 초안은 시작 방식과 문장 구조와 마무리 의미가 달라야 한다.
+12. 학생 사이의 문장과 의미와 종결 표현이 반복되지 않도록 한다.
+13. 각 초안은 한글 기준 반드시 200자 이상 500자 이하이며 1500바이트를 넘지 않게 작성한다.
+14. 입력이 짧아도 확인되는 주제와 표현과 관심을 바탕으로 태도와 발전 가능성을 긍정적으로 연결해 200자 이상 작성한다. 다만 입력에 없는 활동과 성과를 실제 사실처럼 만들지 않는다.
+15. 조사와 문장 연결을 다시 읽어 어색한 표현을 고치고 같은 종결어미를 기계적으로 반복하지 않는다.`;
+
+const TYPE_RULES = {
+  subject:
+    "교과 세부능력 및 특기사항이다. 교과 성취기준과 수업 참여와 탐구 발표 수행평가 문제 해결 과정과 자기주도적 변화와 성장을 중심으로 쓴다. 생활 전반의 성격 평가는 쓰지 않는다.",
+  behavior:
+    "행동특성 및 종합의견이다. 학년 동안 교사가 지속적으로 관찰한 책임감 협력 배려 의사소통 역할 수행 생활 태도와 행동 변화를 종합한다. 한 번의 수업 성취만으로 성격 전체를 단정하지 않는다.",
+  general:
+    "일반 생활기록부 초안이다. 사용자의 요청과 입력 자료에서 확인되는 기록 영역을 따르되 교사 관찰 근거를 중심으로 작성한다.",
+};
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
@@ -40,9 +54,13 @@ export async function POST(req: NextRequest) {
         .filter((value: unknown) => typeof value === "string")
         .slice(-80)
     : [];
-  const prompt = `당신은 한국 고등학교 교사를 돕는 생활기록부 초안 작성 비서다. ${RULES}
+  const recordType = ["subject", "behavior", "general"].includes(body.recordType)
+    ? (body.recordType as keyof typeof TYPE_RULES)
+    : "general";
+  const prompt = `당신은 한국 학교 교사를 돕는 생활기록부 초안 작성 비서다. 작성 종류는 ${recordType}이다. ${TYPE_RULES[recordType]} ${COMMON_RULES}
+사용자 요청=${String(body.request || "").slice(0, 4000)}
 앞 묶음에서 이미 사용한 다음 표현과 문장 구조를 반복하지 않는다: ${JSON.stringify(avoidPhrases).slice(0, 30000)}
-JSON만 반환한다. 형식은 {"students":[{"name":"학생명","source":"원문","factDraft":"사실 중심 초안","inferredDraft":"관찰 가능성 포함 초안","inferredParts":["교사가 확인할 유추 구절"]}]}이다. 학생은 입력 순서와 이름을 그대로 유지한다. 입력=${JSON.stringify(students).slice(0, 90000)}`;
+JSON만 반환한다. 형식은 {"students":[{"name":"학생명","source":"원문","factDraft":"1안 관찰 중심","inferredDraft":"2안 성장 중심","recommendedDraft":"3안 AI 추천","inferredParts":["2안에서 교사가 확인할 유추 구절"],"recommendedInferredParts":["3안에서 교사가 확인할 유추 구절"]}]}이다. 학생은 입력 순서와 이름을 그대로 유지한다. 입력=${JSON.stringify(students).slice(0, 90000)}`;
   const response = await fetch(openAIUrl("responses"), {
     method: "POST",
     headers: {
@@ -84,12 +102,32 @@ JSON만 반환한다. 형식은 {"students":[{"name":"학생명","source":"원�
       ...x,
       factDraft: normalizeStudentSentence(x.factDraft),
       inferredDraft: normalizeStudentSentence(x.inferredDraft),
+      recommendedDraft: normalizeStudentSentence(x.recommendedDraft),
       inferredParts: Array.isArray(x.inferredParts)
         ? x.inferredParts.map((value: unknown) => String(value))
         : [],
-      finalText: normalizeStudentSentence(x.factDraft),
-      selected: "fact",
+      recommendedInferredParts: Array.isArray(x.recommendedInferredParts)
+        ? x.recommendedInferredParts.map((value: unknown) => String(value))
+        : [],
+      finalText: normalizeStudentSentence(x.recommendedDraft),
+      selected: "recommended",
       reviewed: false,
     }));
+  const invalidLength = drafts.find((draft: any) => {
+    const values = [draft.factDraft, draft.inferredDraft, draft.recommendedDraft];
+    return values.some((value) => {
+      const characters = Array.from(String(value).trim()).length;
+      const bytes = new TextEncoder().encode(String(value).trim()).length;
+      return characters < 200 || characters > 500 || bytes > 1500;
+    });
+  });
+  if (invalidLength)
+    return NextResponse.json(
+      {
+        error:
+          "학생별 세 초안은 각각 200자 이상 500자 이하로 다시 작성해야 합니다.",
+      },
+      { status: 502 },
+    );
   return NextResponse.json({ drafts });
 }

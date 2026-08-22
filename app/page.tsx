@@ -24,6 +24,8 @@ import { analyzeFile } from "@/lib/analyze";
 import { maskText } from "@/lib/privacy";
 import { saveFileBlob, storedFile } from "@/lib/file-db";
 import { safeExcelFormula } from "@/lib/excel-security";
+import { applyStructuralExcelAction } from "@/lib/excel-structural-actions";
+type UploadList = FileList | File[] | null;
 type View =
   | "home"
   | "help"
@@ -52,6 +54,21 @@ const steps = [
   ["실행·검증", "원본을 보호하며 결과 생성"],
   ["결과 확인", "다운로드하거나 다시 수정"],
 ];
+function studentRecordType(request: string): Task["studentRecordType"] | null {
+  if (/행발|행동\s*발달|행동\s*특성|종합\s*의견/.test(request))
+    return "behavior";
+  if (/세특|세부\s*특기|세부\s*능력|교과.*특기/.test(request))
+    return "subject";
+  if (/생기부|생활\s*기록부/.test(request)) return "general";
+  return null;
+}
+function studentRecordLabel(type: Task["studentRecordType"] | null) {
+  return type === "subject"
+    ? "교과 세부능력 및 특기사항"
+    : type === "behavior"
+      ? "행동특성 및 종합의견"
+      : "생활기록부";
+}
 function resultRows(result: WorkResult) {
   if (result.kind === "table")
     return [result.columns || [], ...(result.rows || [])].map((row) =>
@@ -340,11 +357,18 @@ export default function App() {
     [selected, setSelected] = useState<string[]>([]),
     [notice, setNotice] = useState(""),
     [listening, setListening] = useState(false),
+    [voiceState, setVoiceState] = useState(""),
+    [recording, setRecording] = useState(false),
     [restorePreview, setRestorePreview] = useState<Store | null>(null),
     [pendingApi, setPendingApi] = useState<"plan" | "students" | null>(null);
   const rec = useRef<any>(null),
     keep = useRef(false),
     voice = useRef(""),
+    restartCount = useRef(0),
+    restartTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
+    recorder = useRef<MediaRecorder | null>(null),
+    recorderStream = useRef<MediaStream | null>(null),
+    recordedChunks = useRef<Blob[]>([]),
     rawFiles = useRef(new Map<string, File>());
   const task = store.tasks.find((x) => x.id === taskId);
   useEffect(() => {
@@ -358,6 +382,19 @@ export default function App() {
     addEventListener("hashchange", sync);
     return () => removeEventListener("hashchange", sync);
   }, []);
+  useEffect(
+    () => () => {
+      keep.current = false;
+      if (restartTimer.current) clearTimeout(restartTimer.current);
+      rec.current?.stop?.();
+      if (recorder.current?.state === "recording") {
+        recorder.current.onstop = null;
+        recorder.current.stop();
+      }
+      recorderStream.current?.getTracks().forEach((track) => track.stop());
+    },
+    [],
+  );
   useEffect(() => {
     if (mounted) save(store);
   }, [store, mounted]);
@@ -400,8 +437,8 @@ export default function App() {
       ),
     }));
   }
-  async function addFiles(list: FileList | null, asTemplate = false) {
-    if (!list) return;
+  async function addFiles(list: UploadList, asTemplate = false) {
+    if (!list) return [];
     const made: any[] = [];
     setNotice(`${list.length}개 자료의 실제 내용을 이 기기에서 읽고 있습니다.`);
     for (const f of Array.from(list)) {
@@ -422,7 +459,12 @@ export default function App() {
           "png",
           "webp",
           "mp3",
+          "flac",
+          "mp4",
+          "mpeg",
+          "mpga",
           "m4a",
+          "ogg",
           "wav",
           "webm",
           "hwpx",
@@ -480,6 +522,7 @@ export default function App() {
       }));
     else update((s) => ({ ...s, files: [...made, ...s.files] }));
     setNotice(`${made.length}개 자료 분석을 마쳤습니다.`);
+    return made.map((item) => item.id as string);
   }
   function startVoice() {
     const SR =
@@ -490,7 +533,9 @@ export default function App() {
         "이 브라우저는 연속 받아쓰기를 지원하지 않습니다. Chrome 또는 Edge를 사용하거나 음성파일을 추가해 주세요.",
       );
     keep.current = true;
+    restartCount.current = 0;
     setListening(true);
+    setVoiceState("듣는 중");
     voice.current = task?.request || "";
     const begin = () => {
       if (!keep.current) return;
@@ -500,6 +545,8 @@ export default function App() {
       r.continuous = true;
       r.interimResults = true;
       r.onresult = (e: any) => {
+        restartCount.current = 0;
+        setVoiceState("듣는 중");
         let interim = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const x = e.results[i][0].transcript;
@@ -514,11 +561,19 @@ export default function App() {
           keep.current = false;
           setListening(false);
           setNotice("마이크 권한을 허용해 주세요.");
+          setVoiceState("");
+        } else {
+          setVoiceState("잠시 멈춤 · 자동으로 다시 연결하는 중");
         }
       };
       r.onend = () => {
         rec.current = null;
-        if (keep.current) setTimeout(begin, 350);
+        if (keep.current) {
+          restartCount.current++;
+          setVoiceState("잠시 멈춤 · 자동으로 다시 연결하는 중");
+          const delay = Math.min(1500, 250 + restartCount.current * 150);
+          restartTimer.current = setTimeout(begin, delay);
+        }
         else setListening(false);
       };
       try {
@@ -531,11 +586,61 @@ export default function App() {
   }
   function stopVoice() {
     keep.current = false;
+    if (restartTimer.current) clearTimeout(restartTimer.current);
+    restartTimer.current = null;
     rec.current?.stop();
     rec.current = null;
     setListening(false);
+    setVoiceState("");
     if (task) changeTask({ request: voice.current.trim() || task.request });
     setNotice("받아쓰기를 완료했습니다.");
+  }
+  async function startLongRecording() {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder)
+      return setNotice("이 브라우저에서는 긴 녹음을 지원하지 않습니다.");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      let media: MediaRecorder;
+      try {
+        media = new MediaRecorder(stream, { audioBitsPerSecond: 32000 });
+      } catch {
+        media = new MediaRecorder(stream);
+      }
+      recordedChunks.current = [];
+      recorderStream.current = stream;
+      recorder.current = media;
+      media.ondataavailable = (event) => {
+        if (event.data.size) recordedChunks.current.push(event.data);
+      };
+      media.onstop = async () => {
+        const type = media.mimeType || "audio/webm";
+        const blob = new Blob(recordedChunks.current, { type });
+        recorderStream.current?.getTracks().forEach((track) => track.stop());
+        recorderStream.current = null;
+        recorder.current = null;
+        recordedChunks.current = [];
+        setRecording(false);
+        if (!blob.size) return setNotice("녹음된 내용이 없습니다.");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const ids = await addFiles([
+          new File([blob], `긴녹음-${stamp}.webm`, { type }),
+        ]);
+        if (ids.length) {
+          const nextIds = [...new Set([...selected, ...ids])];
+          setSelected(nextIds);
+          changeTask({ fileIds: nextIds });
+        }
+        setNotice("긴 녹음을 내 자료에 추가했습니다. 다음 단계에서 분석할 수 있습니다.");
+      };
+      media.start(1000);
+      setRecording(true);
+      setNotice("긴 녹음을 시작했습니다. 말 사이에 쉬어도 녹음은 계속됩니다.");
+    } catch {
+      setNotice("마이크 권한을 허용한 뒤 다시 시도해 주세요.");
+    }
+  }
+  function stopLongRecording() {
+    if (recorder.current?.state === "recording") recorder.current.stop();
   }
   function makePlan() {
     if (!task?.request.trim())
@@ -545,8 +650,13 @@ export default function App() {
   async function runPlan() {
     if (!task) return;
     let chosen = store.files.filter((x) => task.fileIds.includes(x.id));
-    const media = chosen.filter((x) =>
-      ["image", "audio"].includes(x.analysis?.kind || ""),
+    const media = chosen.filter(
+      (x) =>
+        ["image", "audio"].includes(x.analysis?.kind || "") ||
+        (x.analysis?.kind === "pdf" &&
+          x.analysis.warnings.some((warning) =>
+            warning.includes("사진 문자 인식"),
+          )),
     );
     if (media.length) {
       setNotice("확인한 사진과 음성 내용을 읽고 있습니다.");
@@ -586,15 +696,18 @@ export default function App() {
             summary:
               item.analysis?.kind === "audio"
                 ? "음성을 글로 변환했습니다."
-                : "사진의 글과 표를 읽었습니다.",
+                : item.analysis?.kind === "pdf"
+                  ? "스캔 PDF의 글과 학생 자료를 읽었습니다."
+                  : "사진의 글과 표를 읽었습니다.",
             text: data.text || "",
             details: [
               ...(item.analysis?.details || []),
               "OpenAI API 분석 완료",
             ],
-            warnings: [],
+            warnings: Array.isArray(data.warnings) ? data.warnings : [],
             analyzedAt: new Date().toISOString(),
           },
+          students: Array.isArray(data.students) ? data.students : item.students,
         });
       }
       if (refreshed.size) {
@@ -693,7 +806,8 @@ export default function App() {
       ).text,
     }));
     setPendingApi(null);
-    setNotice(`${students.length}명의 두 가지 초안을 만들고 있습니다.`);
+    const recordType = studentRecordType(task.request) || "general";
+    setNotice(`${students.length}명의 세 가지 초안을 만들고 있습니다.`);
     try {
       const generated: StudentDraft[] = [];
       const batchSize = 20;
@@ -711,8 +825,14 @@ export default function App() {
               students: masked.slice(start, start + batchSize),
               avoidPhrases: generated
                 .slice(-40)
-                .flatMap((draft) => [draft.factDraft, draft.inferredDraft])
+                .flatMap((draft) => [
+                  draft.factDraft,
+                  draft.inferredDraft,
+                  draft.recommendedDraft || "",
+                ])
                 .filter(Boolean),
+              recordType,
+              request: task.request,
               consent: true,
             }),
           });
@@ -745,11 +865,12 @@ export default function App() {
           masked: true,
         },
         studentDrafts: drafts,
+        studentRecordType: recordType,
         studentValidation: findDraftDuplicates(drafts),
         step: 6,
-        result: `학생 ${drafts.length}명의 두 가지 초안을 생성했습니다.`,
+        result: `학생 ${drafts.length}명의 세 가지 초안을 생성했습니다.`,
       });
-      setNotice("학생별 두 가지 초안을 만들었습니다.");
+      setNotice("학생별 세 가지 초안을 만들었습니다.");
     } catch (e: any) {
       setNotice(e.message);
     }
@@ -807,10 +928,21 @@ export default function App() {
   }
   async function downloadStudentResult() {
     if (!task?.studentDrafts) return;
-    const columns = ["학생 이름", "학생 원문", "선택", "교사 최종본"];
+    const columns = [
+      "학생 이름",
+      "입력 근거",
+      "1안 관찰 중심",
+      "2안 성장 중심",
+      "3안 AI 추천",
+      "선택",
+      "교사 최종본",
+    ];
     const rows = task.studentDrafts.map((d) => [
       d.name,
       d.source,
+      d.factDraft,
+      d.inferredDraft,
+      d.recommendedDraft || "",
       d.selected || "",
       d.finalText,
     ]);
@@ -970,7 +1102,150 @@ export default function App() {
             actionCount++;
             continue;
           }
-          if (action.type === "conditional") {
+          if (
+            action.type === "sort" ||
+            action.type === "filter" ||
+            action.type === "removeDuplicates" ||
+            action.type === "transpose"
+          ) {
+            if (applyStructuralExcelAction(book, action)) actionCount++;
+            continue;
+          }
+          /* 이전의 화면 내부 구현은 독립 실행기로 이동했습니다.
+          if (
+            action.type === "sort" ||
+            action.type === "filter" ||
+            action.type === "removeDuplicates" ||
+            action.type === "transpose"
+          ) {
+            if (
+              !/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/i.test(
+                action.range,
+              )
+            )
+              continue;
+            const bounds = XLSX.utils.decode_range(action.range);
+            const height = bounds.e.r - bounds.s.r + 1;
+            const width = bounds.e.c - bounds.s.c + 1;
+            if (height * width > 100000) continue;
+            if (action.type === "filter") {
+              sheet["!autofilter"] = { ref: action.range.toUpperCase() };
+              actionCount++;
+              continue;
+            }
+            const sourceRows = Array.from({ length: height }, (_, row) =>
+              Array.from({ length: width }, (_, column) => {
+                const address = XLSX.utils.encode_cell({
+                  r: bounds.s.r + row,
+                  c: bounds.s.c + column,
+                });
+                return sheet[address] ? { ...sheet[address] } : undefined;
+              }),
+            );
+            if (
+              (action.type === "sort" ||
+                action.type === "removeDuplicates") &&
+              sourceRows.some((row) => row.some((cell) => Boolean(cell?.f)))
+            )
+              continue;
+            if (action.type === "transpose") {
+              if (
+                !/^[A-Z]{1,3}[1-9][0-9]{0,6}$/i.test(action.targetCell) ||
+                !action.targetSheet.trim()
+              )
+                continue;
+              let targetSheet = book.Sheets[action.targetSheet];
+              if (!targetSheet) {
+                targetSheet = XLSX.utils.aoa_to_sheet([]);
+                XLSX.utils.book_append_sheet(
+                  book,
+                  targetSheet,
+                  action.targetSheet.slice(0, 31),
+                );
+              }
+              const start = XLSX.utils.decode_cell(action.targetCell);
+              sourceRows.forEach((row, rowIndex) =>
+                row.forEach((cell, columnIndex) => {
+                  const address = XLSX.utils.encode_cell({
+                    r: start.r + columnIndex,
+                    c: start.c + rowIndex,
+                  });
+                  if (cell) {
+                    const copied = { ...cell };
+                    // 행·열 전환 시 상대참조 수식이 엉뚱한 셀을 가리키지 않도록
+                    // 계산된 표시값만 옮기고 원본 수식은 원본 시트에 보존한다.
+                    if (copied.f) delete copied.f;
+                    targetSheet[address] = copied;
+                  }
+                }),
+              );
+              const targetRange = {
+                s: start,
+                e: {
+                  r: start.r + width - 1,
+                  c: start.c + height - 1,
+                },
+              };
+              const existing = targetSheet["!ref"]
+                ? XLSX.utils.decode_range(targetSheet["!ref"])
+                : targetRange;
+              existing.s.r = Math.min(existing.s.r, targetRange.s.r);
+              existing.s.c = Math.min(existing.s.c, targetRange.s.c);
+              existing.e.r = Math.max(existing.e.r, targetRange.e.r);
+              existing.e.c = Math.max(existing.e.c, targetRange.e.c);
+              targetSheet["!ref"] = XLSX.utils.encode_range(existing);
+              actionCount++;
+              continue;
+            }
+            const hasHeader = action.hasHeader !== false;
+            const header = hasHeader ? sourceRows.shift() : undefined;
+            let outputRows = sourceRows;
+            if (action.type === "sort") {
+              const key = action.column - 1;
+              if (key < 0 || key >= width) continue;
+              outputRows = [...sourceRows].sort((left, right) => {
+                const a = left[key]?.v ?? "";
+                const b = right[key]?.v ?? "";
+                const result =
+                  typeof a === "number" && typeof b === "number"
+                    ? a - b
+                    : String(a).localeCompare(String(b), "ko", {
+                        numeric: true,
+                      });
+                return action.order === "desc" ? -result : result;
+              });
+            } else {
+              const keys = action.columns
+                .map((column) => column - 1)
+                .filter((column) => column >= 0 && column < width);
+              if (!keys.length) continue;
+              const seen = new Set<string>();
+              outputRows = sourceRows.filter((row) => {
+                const key = JSON.stringify(keys.map((column) => row[column]?.v));
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+              });
+            }
+            const finalRows = header ? [header, ...outputRows] : outputRows;
+            for (let row = 0; row < height; row++)
+              for (let column = 0; column < width; column++) {
+                const address = XLSX.utils.encode_cell({
+                  r: bounds.s.r + row,
+                  c: bounds.s.c + column,
+                });
+                const cell = finalRows[row]?.[column];
+                if (cell) sheet[address] = { ...cell };
+                else delete sheet[address];
+              }
+            actionCount++;
+            continue;
+          }
+          */
+          if (
+            action.type === "conditional" ||
+            action.type === "dataValidation"
+          ) {
             actionCount++;
             continue;
           }
@@ -1075,15 +1350,82 @@ export default function App() {
       }) as ArrayBuffer;
       const styleActions = (result.excelActions || []).filter(
         (action) =>
-          action.type === "highlight" || action.type === "conditional",
+          action.type === "highlight" ||
+          action.type === "conditional" ||
+          action.type === "dataValidation",
       );
       if (styleActions.length) {
         const ExcelJS = await import("exceljs");
         const styled = new ExcelJS.Workbook();
         await styled.xlsx.load(output);
+        let validationSheet: any;
+        let validationColumn = 0;
         for (const action of styleActions) {
           const sheet = styled.getWorksheet(action.sheet);
           if (!sheet) continue;
+          if (action.type === "dataValidation") {
+            if (
+              !/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/i.test(
+                action.range,
+              )
+            )
+              continue;
+            let formula = action.sourceRange;
+            if (
+              formula &&
+              !/^'?[^\[\]!:]{1,31}'?!\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}:\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}$/i.test(
+                formula,
+              )
+            )
+              formula = undefined;
+            const values = [...new Set(action.values || [])]
+              .map((value) => String(value).trim())
+              .filter(Boolean)
+              .slice(0, 1000);
+            if (!formula && values.length) {
+              if (!validationSheet) {
+                let listName = "AI 선택목록";
+                let suffix = 2;
+                while (styled.getWorksheet(listName))
+                  listName = `AI 선택목록${suffix++}`;
+                validationSheet = styled.addWorksheet(listName, {
+                  state: "veryHidden",
+                });
+              }
+              validationColumn++;
+              values.forEach((value, index) =>
+                validationSheet
+                  .getCell(index + 1, validationColumn)
+                  .setValue(value),
+              );
+              const letter = XLSX.utils.encode_col(validationColumn - 1);
+              formula = `'${validationSheet.name}'!$${letter}$1:$${letter}$${values.length}`;
+            }
+            if (!formula) continue;
+            const bounds = XLSX.utils.decode_range(action.range);
+            const count =
+              (bounds.e.r - bounds.s.r + 1) *
+              (bounds.e.c - bounds.s.c + 1);
+            if (count > 10000) continue;
+            for (let row = bounds.s.r + 1; row <= bounds.e.r + 1; row++)
+              for (
+                let column = bounds.s.c + 1;
+                column <= bounds.e.c + 1;
+                column++
+              )
+                sheet.getCell(row, column).dataValidation = {
+                  type: "list",
+                  allowBlank: true,
+                  formulae: [formula],
+                  showErrorMessage: true,
+                  errorTitle: "목록에서 선택",
+                  error: "목록에 있는 값을 선택해 주세요.",
+                  showInputMessage: Boolean(action.prompt),
+                  promptTitle: "선택 안내",
+                  prompt: action.prompt || "목록에서 값을 선택하세요.",
+                };
+            continue;
+          }
           const color = (action.color || "FFF2CC")
             .replace(/^#/, "")
             .toUpperCase();
@@ -1426,8 +1768,12 @@ export default function App() {
             plan={makePlan}
             answer={answer}
             listening={listening}
+            voiceState={voiceState}
             startVoice={startVoice}
             stopVoice={stopVoice}
+            recording={recording}
+            startLongRecording={startLongRecording}
+            stopLongRecording={stopLongRecording}
             generateStudents={makeStudentDrafts}
             changeDraft={changeDraft}
             downloadStudents={downloadStudentResult}
@@ -1461,11 +1807,16 @@ export default function App() {
               store.files.some(
                 (x) =>
                   task.fileIds.includes(x.id) &&
-                  ["image", "audio"].includes(x.analysis?.kind || ""),
+                  ["image", "audio"].includes(x.analysis?.kind || "") ||
+                  (x.analysis?.kind === "pdf" &&
+                    x.analysis.warnings.some((warning) =>
+                      warning.includes("사진 문자 인식"),
+                    )),
               ) && (
                 <p className="mediaWarning">
-                  사진과 음성은 원본 내용을 글로 바꾸기 위해 가리지 않은 파일이
-                  전송됩니다.
+                  사진과 음성 및 글자가 없는 스캔 PDF는 내용을 먼저 읽어야 하므로
+                  가리지 않은 원본 파일이 전송됩니다. 학생 이름이 들어 있다면 확인
+                  후 진행하세요.
                 </p>
               )}
             <p>API 사용료가 발생할 수 있습니다.</p>
@@ -1570,10 +1921,63 @@ function Files({
   store: Store;
   selected: string[];
   setSelected: (x: string[]) => void;
-  add: (f: FileList | null) => void;
+  add: (f: UploadList) => Promise<string[]>;
   start: () => void;
   remove: (id: string) => void;
 }) {
+  const [googleFiles, setGoogleFiles] = useState<
+    { id: string; name: string; modifiedTime: string }[]
+  >([]);
+  const [googlePicked, setGooglePicked] = useState<string[]>([]);
+  const [googleMessage, setGoogleMessage] = useState("");
+  const [googleNeedsLogin, setGoogleNeedsLogin] = useState(false);
+  async function loadGoogleSheets() {
+    setGoogleMessage("Google Sheets 목록을 불러오는 중입니다.");
+    const response = await fetch("/api/google/sheets", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) {
+      setGoogleNeedsLogin(true);
+      setGoogleMessage(data.error || "Google 계정을 연결해 주세요.");
+      return;
+    }
+    setGoogleNeedsLogin(false);
+    setGoogleFiles(data.files || []);
+    setGoogleMessage(
+      data.files?.length
+        ? "가져올 시트를 체크하세요. 원본은 변경하지 않습니다."
+        : "가져올 Google Sheets가 없습니다.",
+    );
+  }
+  async function importGoogleSheets() {
+    if (!googlePicked.length) return;
+    setGoogleMessage(`${googlePicked.length}개 시트를 Excel 사본으로 가져오는 중입니다.`);
+    const imported: File[] = [];
+    for (const id of googlePicked) {
+      const item = googleFiles.find((file) => file.id === id);
+      if (!item) continue;
+      const response = await fetch(`/api/google/export?id=${encodeURIComponent(id)}`);
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setGoogleMessage(data.error || `${item.name} 가져오기에 실패했습니다.`);
+        return;
+      }
+      imported.push(
+        new File([await response.blob()], `${item.name.replace(/[\\/:*?"<>|]/g, "_")}.xlsx`, {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }),
+      );
+    }
+    await add(imported);
+    setGooglePicked([]);
+    setGoogleMessage(`${imported.length}개 Google Sheets를 내 자료에 추가했습니다.`);
+  }
+  async function disconnectGoogle() {
+    await fetch("/api/google/disconnect", { method: "POST" });
+    setGoogleFiles([]);
+    setGooglePicked([]);
+    setGoogleNeedsLogin(false);
+    setGoogleMessage("Google 연결을 해제했습니다.");
+  }
   return (
     <Section
       title={`내 자료 ${store.files.length}개`}
@@ -1583,6 +1987,50 @@ function Files({
         ＋ 새 자료 추가
         <input type="file" multiple onChange={(e) => add(e.target.files)} />
       </label>
+      <div className="setting block">
+        <b>Google Sheets 가져오기</b>
+        <span>내 Google Sheets를 읽기 전용으로 선택해 Excel 사본으로 가져옵니다.</span>
+        {!googleFiles.length && !googleNeedsLogin && (
+          <button onClick={loadGoogleSheets}>Google Sheets 목록 보기</button>
+        )}
+        {googleNeedsLogin && (
+          <button onClick={() => (window.location.href = "/api/google/connect")}>
+            Google 계정 연결
+          </button>
+        )}
+        {!!googleFiles.length && (
+          <>
+            <div className="filelist">
+              {googleFiles.map((file) => (
+                <label key={file.id}>
+                  <input
+                    type="checkbox"
+                    checked={googlePicked.includes(file.id)}
+                    onChange={(event) =>
+                      setGooglePicked(
+                        event.target.checked
+                          ? [...googlePicked, file.id]
+                          : googlePicked.filter((id) => id !== file.id),
+                      )
+                    }
+                  />
+                  <div>
+                    <b>{file.name}</b>
+                    <span>
+                      최근 수정 {new Date(file.modifiedTime).toLocaleDateString("ko-KR")}
+                    </span>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <button disabled={!googlePicked.length} onClick={importGoogleSheets}>
+              선택한 시트 가져오기
+            </button>
+            <button onClick={disconnectGoogle}>Google 연결 해제</button>
+          </>
+        )}
+        {googleMessage && <span>{googleMessage}</span>}
+      </div>
       <div className="filelist">
         {store.files.map((f) => (
           <label
@@ -1655,7 +2103,7 @@ function Templates({
   remove,
 }: {
   store: Store;
-  add: (f: FileList | null) => void;
+  add: (f: UploadList) => Promise<string[]>;
   start: (id: string) => void;
   remove: (id: string) => void;
 }) {
@@ -1664,11 +2112,23 @@ function Templates({
   return (
     <Section
       title="내 양식"
-      sub="자주 쓰는 Word·Excel 양식을 등록하고 해당 양식에서 작업을 시작하세요."
+      sub="자주 쓰는 Word 문서나 Excel 표 또는 PDF 견본을 등록하고 해당 양식에서 작업을 시작하세요."
     >
+      <div className="note">
+        <b>어떤 파일을 등록하면 되나요?</b>
+        <p>Word 문서(.docx) · 안내문이나 보고서처럼 글을 작성할 양식</p>
+        <p>Excel 통합문서(.xlsx) · 명단이나 시간표처럼 표에 내용을 채울 양식</p>
+        <p>PDF 견본(.pdf) · 보이는 제목과 표 구성을 참고하여 새 결과 양식 생성</p>
+        <p className="warn">PDF 원본 칸에 직접 입력하는 기능은 아직 미구현이며 새 Excel·Word·PDF 결과로 만듭니다.</p>
+      </div>
       <label className="upload">
         ＋ 양식 등록
-        <input type="file" multiple onChange={(e) => add(e.target.files)} />
+        <input
+          type="file"
+          multiple
+          accept=".docx,.xlsx,.pdf"
+          onChange={(e) => add(e.target.files)}
+        />
       </label>
       <div className="cards">
         {store.templates.map((t) => (
@@ -1976,8 +2436,12 @@ function TaskFlow({
   plan,
   answer,
   listening,
+  voiceState,
   startVoice,
   stopVoice,
+  recording,
+  startLongRecording,
+  stopLongRecording,
   generateStudents,
   changeDraft,
   downloadStudents,
@@ -1993,17 +2457,22 @@ function TaskFlow({
   plan: () => void;
   answer: (x: string) => void;
   listening: boolean;
+  voiceState: string;
   startVoice: () => void;
   stopVoice: () => void;
+  recording: boolean;
+  startLongRecording: () => void;
+  stopLongRecording: () => void;
   generateStudents: () => void;
   changeDraft: (i: number, p: Partial<StudentDraft>) => void;
   downloadStudents: () => void;
   execute: () => void;
   downloadWork: () => void;
-  addFiles: (list: FileList | null, asTemplate?: boolean) => void;
+  addFiles: (list: UploadList, asTemplate?: boolean) => Promise<string[]>;
 }) {
   const [q, setQ] = useState("");
-  const isStudent = /생기부|생활기록부/.test(task.request);
+  const recordType = studentRecordType(task.request);
+  const isStudent = !!recordType;
   const count = store.files
     .filter((x) => task.fileIds.includes(x.id))
     .reduce((n, x) => n + (x.students?.length || 0), 0);
@@ -2078,7 +2547,18 @@ function TaskFlow({
                 ■ 받아쓰기 완료
               </button>
             ) : (
-              <button onClick={startVoice}>🎙 계속 말하기</button>
+              <button disabled={recording} onClick={startVoice}>
+                🎙 바로 받아쓰기
+              </button>
+            )}
+            {recording ? (
+              <button className="stop" onClick={stopLongRecording}>
+                ■ 긴 녹음 완료
+              </button>
+            ) : (
+              <button disabled={listening} onClick={startLongRecording}>
+                ● 긴 녹음
+              </button>
             )}
             <label>
               음성파일 추가
@@ -2090,8 +2570,10 @@ function TaskFlow({
             </label>
             <span>
               {listening
-                ? "듣는 중 · 잠시 멈춰도 다시 시작합니다."
-                : "글쓰기와 말하기를 함께 사용할 수 있습니다."}
+                ? voiceState || "듣는 중"
+                : recording
+                  ? "녹음 중 · 말 사이에 쉬어도 계속 저장됩니다."
+                  : "바로 받아쓰기는 글로 표시되고 긴 녹음은 끊기지 않는 파일로 저장됩니다."}
             </span>
           </div>
         </>
@@ -2142,16 +2624,16 @@ function TaskFlow({
           <h2>실행·검증</h2>
           {isStudent ? (
             <div className="studentStart">
-              <b>학생별 두 가지 생기부 초안</b>
+              <b>학생별 세 가지 {studentRecordLabel(recordType)} 초안</b>
               <p>
                 선택한 자료에서 이름과 소감문이 확인된 학생은 {count}명입니다.
               </p>
               <ul>
-                <li>1안은 학생 글에서 확인되는 사실만 사용합니다.</li>
+                <li>1안은 교사가 확인할 수 있는 관찰과 활동 근거 중심입니다.</li>
                 <li>
-                  2안은 학생 글에서 연결 가능한 관찰 가능성을 포함하고 유추
-                  부분을 표시합니다.
+                  2안은 확인된 근거에서 이어지는 성장과 발전 가능성을 강조합니다.
                 </li>
+                <li>3안은 1안과 2안을 자연스럽게 다시 구성한 AI 추천문입니다.</li>
                 <li>
                   쉼표는 사용하지 않으며 모든 완결 문장을 마침표로 끝냅니다.
                 </li>
@@ -2216,6 +2698,7 @@ function TaskFlow({
                 확인 필요 · {x}
               </p>
             ))}
+            {task.workResult && <WorkExplanation result={task.workResult} />}
             <button onClick={() => change({ step: 2, status: "draft" })}>
               수정 요청
             </button>
@@ -2239,6 +2722,113 @@ function TaskFlow({
   );
 }
 
+function WorkExplanation({ result }: { result: WorkResult }) {
+  const [view, setView] = useState<"how" | "formula" | "beginner" | "check">(
+    "how",
+  );
+  const [program, setProgram] = useState<"excel" | "sheets">("excel");
+  const actions = result.excelActions || [];
+  const formulas = actions.filter(
+    (action): action is Extract<
+      NonNullable<WorkResult["excelActions"]>[number],
+      { type: "formula" }
+    > => action.type === "formula",
+  );
+  const descriptions = actions.map((action) => {
+    if (action.type === "replace")
+      return `${action.sheet} 시트 ${action.range || "사용 범위"}에서 ‘${action.find}’을 ‘${action.replace}’으로 바꿈.`;
+    if (action.type === "set")
+      return `${action.sheet} 시트 ${action.cell}에 ‘${action.value}’을 입력함.`;
+    if (action.type === "formula")
+      return `${action.sheet} 시트 ${action.cell}에 =${action.formula.replace(/^=/, "")} 계산식을 입력함.`;
+    if (action.type === "highlight")
+      return `${action.sheet} 시트 ${action.range || "사용 범위"}에서 ‘${action.value}’과 같은 셀을 색으로 표시함.`;
+    if (action.type === "conditional")
+      return `${action.sheet} 시트 ${action.range}에 입력값에 따라 자동으로 바뀌는 조건부서식을 설정함.`;
+    if (action.type === "dataValidation")
+      return `${action.sheet} 시트 ${action.range}에 목록에서 고르는 드롭다운을 설정함.`;
+    if (action.type === "sort")
+      return `${action.sheet} 시트 ${action.range}을 ${action.column}번째 열 기준 ${action.order === "desc" ? "내림차순" : "오름차순"}으로 정렬함.`;
+    if (action.type === "filter")
+      return `${action.sheet} 시트 ${action.range}의 제목 행에 필터를 설정함.`;
+    if (action.type === "removeDuplicates")
+      return `${action.sheet} 시트 ${action.range}에서 ${action.columns.join(" · ")}번째 열이 같은 중복 행을 제거함.`;
+    return `${action.sheet} 시트 ${action.range}을 행과 열을 바꾸어 ${action.targetSheet} 시트 ${action.targetCell}부터 배치함.`;
+  });
+  const tutorial = (action: (typeof formulas)[number]) => {
+    const formula = action.formula.replace(/^=/, "");
+    const refs = formula.match(/\$?[A-Z]{1,3}\$?[1-9][0-9]*/g) || [];
+    const functions = [...formula.matchAll(/([A-Z][A-Z0-9.]*)\s*\(/gi)].map(
+      (match) => match[1].toUpperCase(),
+    );
+    return [
+      `${action.sheet} 시트를 엽니다.`,
+      `${action.cell} 셀을 한 번 클릭합니다. 이곳에 계산 결과가 표시됩니다.`,
+      `키보드에서 등호 = 를 입력합니다.`,
+      refs.length
+        ? `계산에 사용할 ${refs.join(" · ")} 셀을 식의 순서대로 클릭하거나 범위는 마우스로 끌어 선택합니다.`
+        : "계산에 사용할 셀을 마우스로 선택합니다.",
+      functions.length
+        ? program === "excel"
+          ? `화면 위쪽 수식 탭에서 함수 삽입을 누르고 ${functions.join(" · ")} 함수를 확인할 수 있습니다.`
+          : `화면 위쪽 삽입 메뉴에서 함수와 ${functions.join(" · ")}를 선택해 확인할 수 있습니다.`
+        : "더하기와 빼기 기호를 식의 순서대로 입력합니다.",
+      `완성된 식이 =${formula}인지 확인합니다.`,
+      "키보드의 Enter를 누릅니다.",
+      program === "excel"
+        ? "같은 계산을 아래 행에도 적용하려면 셀 오른쪽 아래의 작은 네모를 아래로 끕니다."
+        : "같은 계산을 아래 행에도 적용하려면 셀 오른쪽 아래의 파란 점을 아래로 끕니다.",
+      "결과값을 직접 한 번 계산해 같은 값인지 확인합니다. 잘못되면 Ctrl+Z로 되돌립니다.",
+    ];
+  };
+  return (
+    <div className="setting block learningBox">
+      <b>작업 설명과 Excel 학습</b>
+      <div className="learningTabs">
+        <button onClick={() => setView("how")}>어떻게 만들었나요?</button>
+        <button onClick={() => setView("formula")}>함수 배우기</button>
+        <button onClick={() => setView("beginner")}>왕초보 따라하기</button>
+        <button onClick={() => setView("check")}>검증 결과</button>
+      </div>
+      {view === "how" &&
+        (descriptions.length ? (
+          <ol>{descriptions.map((text, index) => <li key={index}>{text}</li>)}</ol>
+        ) : (
+          <p>원자료를 변경하지 않고 결과 내용을 새 표 또는 새 문서로 구성했습니다.</p>
+        ))}
+      {view === "formula" &&
+        (formulas.length ? (
+          formulas.map((action, index) => (
+            <div className="formulaCard" key={index}>
+              <b>{action.sheet} · {action.cell}</b>
+              <code>={action.formula.replace(/^=/, "")}</code>
+              <p>이 식은 실제 결과 파일의 해당 셀에 입력한 계산식입니다.</p>
+            </div>
+          ))
+        ) : (
+          <p>이 작업에는 함수식을 사용하지 않았습니다. 위 작업 설명에서 실제 사용한 정렬·서식·드롭다운 등의 방법을 확인하세요.</p>
+        ))}
+      {view === "beginner" && (
+        <>
+          <div className="learningTabs">
+            <button onClick={() => setProgram("excel")}>Microsoft Excel</button>
+            <button onClick={() => setProgram("sheets")}>Google Sheets</button>
+          </div>
+          {formulas.length ? formulas.map((action, index) => (
+            <div className="formulaCard" key={index}>
+              <b>{index + 1}. {action.cell} 계산 따라하기</b>
+              <ol>{tutorial(action).map((step, number) => <li key={number}>{step}</li>)}</ol>
+            </div>
+          )) : <p>따라 할 함수식이 없습니다. 이 작업은 함수가 아닌 Excel 기능으로 처리했습니다.</p>}
+        </>
+      )}
+      {view === "check" && (
+        <ul>{result.validation.map((item) => <li key={item}>✓ {item}</li>)}</ul>
+      )}
+    </div>
+  );
+}
+
 function StudentReview({
   drafts,
   validation,
@@ -2253,20 +2843,26 @@ function StudentReview({
   const [i, setI] = useState(0),
     d = drafts[i];
   const reviewed = drafts.filter((x) => x.reviewed).length;
-  const choose = (selected: "fact" | "inferred" | "merged") => {
+  const finalCharacters = Array.from(d.finalText.trim()).length;
+  const finalBytes = new TextEncoder().encode(d.finalText.trim()).length;
+  const choose = (
+    selected: "fact" | "inferred" | "recommended" | "merged",
+  ) => {
     const finalText =
       selected === "fact"
         ? d.factDraft
         : selected === "inferred"
           ? d.inferredDraft
-          : `${d.factDraft} ${d.inferredDraft}`;
+          : selected === "recommended"
+            ? d.recommendedDraft || d.factDraft
+            : d.recommendedDraft || `${d.factDraft} ${d.inferredDraft}`;
     change(i, { selected, finalText });
   };
   return (
     <div className="studentReview">
       <div className="reviewTop">
         <div>
-          <h2>학생별 두 가지 초안</h2>
+          <h2>학생별 세 가지 초안</h2>
           <span>
             {reviewed}/{drafts.length}명 확인 완료
           </span>
@@ -2294,13 +2890,15 @@ function StudentReview({
       </div>
       <div className="draftChoices">
         <article className={d.selected === "fact" ? "picked" : ""}>
-          <h3>1안 사실 중심</h3>
+          <h3>1안 관찰 중심</h3>
           <p>{d.factDraft}</p>
+          <small>{Array.from(d.factDraft.trim()).length}자</small>
           <button onClick={() => choose("fact")}>1안 선택</button>
         </article>
         <article className={d.selected === "inferred" ? "picked" : ""}>
-          <h3>2안 관찰 가능성 포함</h3>
+          <h3>2안 성장 중심</h3>
           <p>{d.inferredDraft}</p>
+          <small>{Array.from(d.inferredDraft.trim()).length}자</small>
           {d.inferredParts?.length > 0 && (
             <div className="inference">
               <b>교사 확인이 필요한 유추</b>
@@ -2311,8 +2909,22 @@ function StudentReview({
           )}
           <button onClick={() => choose("inferred")}>2안 선택</button>
         </article>
+        <article className={d.selected === "recommended" ? "picked" : ""}>
+          <h3>3안 AI 추천</h3>
+          <p>{d.recommendedDraft || "3안은 새로 생성할 때 표시됩니다."}</p>
+          <small>{Array.from((d.recommendedDraft || "").trim()).length}자</small>
+          {!!d.recommendedInferredParts?.length && (
+            <div className="inference">
+              <b>교사 확인이 필요한 유추</b>
+              {d.recommendedInferredParts.map((x, n) => (
+                <span key={n}>{x}</span>
+              ))}
+            </div>
+          )}
+          <button onClick={() => choose("recommended")}>3안 선택</button>
+        </article>
       </div>
-      <button onClick={() => choose("merged")}>두 초안 합쳐서 수정</button>
+      <button onClick={() => choose("merged")}>AI 추천문을 바탕으로 직접 수정</button>
       <h3>교사 최종 수정본</h3>
       <textarea
         value={d.finalText}
@@ -2321,6 +2933,17 @@ function StudentReview({
         }
       />
       <div className="validation">
+        <span
+          className={
+            finalCharacters >= 200 &&
+            finalCharacters <= 500 &&
+            finalBytes <= 1500
+              ? "good"
+              : "bad"
+          }
+        >
+          {finalCharacters}자 · {finalBytes}바이트
+        </span>
         <span className={d.finalText.includes(",") ? "bad" : "good"}>
           {d.finalText.includes(",") ? "쉼표가 있습니다" : "쉼표 없음"}
         </span>
@@ -2335,7 +2958,11 @@ function StudentReview({
         <button
           className="primary"
           disabled={
-            d.finalText.includes(",") || !d.finalText.trim().endsWith(".")
+            d.finalText.includes(",") ||
+            !d.finalText.trim().endsWith(".") ||
+            finalCharacters < 200 ||
+            finalCharacters > 500 ||
+            finalBytes > 1500
           }
           onClick={() => {
             change(i, { reviewed: true });

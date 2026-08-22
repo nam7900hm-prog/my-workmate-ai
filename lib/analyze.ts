@@ -37,6 +37,22 @@ function findStudents(rows: Record<string, unknown>[]): StudentSource[] {
     .slice(0, 500);
 }
 
+function findStudentsInPdfPages(pages: string[]): StudentSource[] {
+  const found: StudentSource[] = [];
+  for (const page of pages) {
+    const name = page.match(/(?:학생명|성명|이름)\s*[:：]?\s*([가-힣]{2,5})/);
+    const reflection = page.match(
+      /(?:소감문|소감|활동내용|학생글)\s*[:：]?\s*([\s\S]{4,})/,
+    );
+    if (!name || !reflection) continue;
+    const text = clean(reflection[1])
+      .replace(/\[\d+쪽\][\s\S]*$/, "")
+      .trim();
+    if (text) found.push({ name: name[1], text });
+  }
+  return found.slice(0, 500);
+}
+
 function tableHeaderIndex(grid: any[][]) {
   let best = 0;
   let bestScore = -1;
@@ -82,8 +98,9 @@ export async function analyzeFile(
 ): Promise<{ analysis: FileAnalysis; students?: StudentSource[] }> {
   const ext = file.name.split(".").pop()?.toLowerCase() || "";
   if (["xlsx", "xls", "csv"].includes(ext)) {
-    const wb = XLSX.read(await file.arrayBuffer(), {
-      type: "array",
+    const source = ext === "csv" ? await file.text() : await file.arrayBuffer();
+    const wb = XLSX.read(source, {
+      type: ext === "csv" ? "string" : "array",
       cellStyles: true,
       cellFormula: true,
       cellDates: true,
@@ -258,6 +275,7 @@ export async function analyzeFile(
       pages.push(`[${i}쪽] ${pageText}`);
     }
     const text = clean(pages.join("\n"));
+    const students = findStudentsInPdfPages(pages);
     return {
       analysis: {
         kind: "pdf",
@@ -269,6 +287,7 @@ export async function analyzeFile(
           : ["글자가 없는 스캔 PDF는 사진 문자 인식이 필요합니다."],
         analyzedAt: now(),
       },
+      students: students.length ? students : undefined,
     };
   }
   if (["pptx", "hwpx"].includes(ext)) {
@@ -308,7 +327,11 @@ export async function analyzeFile(
         analyzedAt: now(),
       },
     };
-  if (["mp3", "m4a", "wav", "webm"].includes(ext))
+  if (
+    ["flac", "mp3", "mp4", "mpeg", "mpga", "m4a", "ogg", "wav", "webm"].includes(
+      ext,
+    )
+  )
     return {
       analysis: {
         kind: "audio",

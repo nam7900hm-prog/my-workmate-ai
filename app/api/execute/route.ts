@@ -14,7 +14,9 @@ export async function POST(req: NextRequest) {
       { error: "인공지능 연결이 필요합니다." },
       { status: 503 },
     );
-  const prompt = `사용자가 승인한 작업계획을 실제 결과로 작성한다. 모든 선택 자료를 공평하게 사용한다. 자료에 없는 사실을 만들지 않는다. 자료가 부족하면 warnings에 기록한다. Excel 검색과 추출과 교체 요청은 원래 행과 열의 의미를 유지하고 범위 밖 값은 바꾸지 않는다. 표가 적합하면 kind를 table로 하고 columns와 rows를 채운다. 문서가 적합하면 kind를 text로 하고 text를 채운다. Excel 원본 셀을 실제로 수정해야 할 때만 excelActions를 만든다. 허용 명령은 replace(sheet range find replace) set(sheet cell value) formula(sheet cell formula) highlight(sheet range value color) conditional(sheet range formula color)뿐이다. conditional은 사용자가 조건부서식을 요청한 경우에만 쓴다. sheet와 cell과 range는 입력 자료에서 확인한 실제 이름과 주소만 쓴다. 전체 치환이 아니라 요청 범위를 명시한다. 행 수와 합계와 중복과 누락과 교체 전후를 실제로 검증하여 validation에 기록한다. JSON만 반환한다. 형식은 {"kind":"text 또는 table","title":"결과 제목","text":"문서 본문","columns":["열"],"rows":[["값"]],"validation":["검증"],"warnings":["경고"],"excelActions":[{"type":"replace","sheet":"시트명","range":"A1:D20","find":"이전값","replace":"새값"}]}이다. 입력=${JSON.stringify(body).slice(0, 200000)}`;
+  const prompt = `사용자가 승인한 작업계획을 실제 결과로 작성한다. 모든 선택 자료를 공평하게 사용한다. 자료에 없는 사실을 만들지 않는다. 자료가 부족하면 warnings에 기록한다. Excel 검색과 추출과 교체 요청은 원래 행과 열의 의미를 유지하고 범위 밖 값은 바꾸지 않는다. 표가 적합하면 kind를 table로 하고 columns와 rows를 채운다. 문서가 적합하면 kind를 text로 하고 text를 채운다. 시간표를 반별 교과연계표로 만드는 경우 columns는 시간 항목 2학년 1반 2학년 2반 2학년 3반 순서처럼 구성한다. 각 시간은 과목 교사명 수업내용의 3개 행을 사용한다. 과목 교사명 수업내용은 왼쪽 항목 열에 각각 한 번만 적고 반 이름은 가로 열로 배치한다. 같은 항목명을 각 반 셀 안에서 반복하지 않는다. 수업내용 행의 모든 반 값은 교사가 직접 입력할 수 있도록 반드시 빈 문자열로 둔다. 원본이나 AI 추정으로 수업내용을 채우지 않으며 확인 필요 같은 안내문도 넣지 않는다. 시간표 수업 교체는 학년과 반을 먼저 확정한 경우에만 실행한다. 선택 학급의 두 수업을 기준으로 양쪽 교사의 빈 시간과 학급 충돌을 검사하고 승인받은 두 수업만 서로 교환한다. 교사 이름 전체 치환이나 다른 시간표 셀 변경은 금지한다. Excel 원본 셀을 실제로 수정해야 할 때만 excelActions를 만든다. 허용 명령은 replace(sheet range find replace) set(sheet cell value) formula(sheet cell formula) highlight(sheet range value color) conditional(sheet range formula color) dataValidation(sheet range values 또는 sourceRange prompt)이다. conditional은 사용자가 조건부서식을 요청한 경우에만 쓴다. 교사 이름을 고르는 목록처럼 사용자가 드롭다운을 요청하면 dataValidation을 사용하고 입력 자료에서 확인한 이름 목록을 values에 넣는다. sheet와 cell과 range는 입력 자료에서 확인한 실제 이름과 주소만 쓴다. 전체 치환이 아니라 요청 범위를 명시한다. 행 수와 합계와 중복과 누락과 교체 전후를 실제로 검증하여 validation에 기록한다. JSON만 반환한다. 형식은 {"kind":"text 또는 table","title":"결과 제목","text":"문서 본문","columns":["열"],"rows":[["값"]],"validation":["검증"],"warnings":["경고"],"excelActions":[{"type":"replace","sheet":"시트명","range":"A1:D20","find":"이전값","replace":"새값"}]}이다. 입력=${JSON.stringify(body).slice(0, 200000)}`;
+  const excelActionGuide = ` 추가 Excel 명령: 정렬은 {"type":"sort","sheet":"시트명","range":"A1:D20","column":2,"order":"asc","hasHeader":true} 필터는 {"type":"filter","sheet":"시트명","range":"A1:D20"} 중복제거는 {"type":"removeDuplicates","sheet":"시트명","range":"A1:D20","columns":[1,2],"hasHeader":true} 행열전환은 {"type":"transpose","sheet":"원본시트","range":"A1:D20","targetSheet":"변환결과","targetCell":"A1"} 형식만 사용한다. 사용자가 요구한 작업에 필요한 명령만 만들고 원본 범위 밖은 변경하지 않는다.`;
+  const meetingGuide = ` 회의록 요청이면 kind를 text로 하고 제목 다음에 [회의 개요] [참석자] [안건별 논의] [결정사항] [후속 할 일] [확인 필요] 순서로 구분한다. 후속 할 일은 할 일과 담당자와 기한과 상태를 한 줄씩 함께 적는다. 녹취에 없는 이름 날짜 결정은 만들지 않고 warnings에 기록한다. 발언자 구분이 확실하지 않으면 임의로 배정하지 않는다.`;
   const response = await fetch(openAIUrl("responses"), {
     method: "POST",
     headers: {
@@ -23,7 +25,7 @@ export async function POST(req: NextRequest) {
     },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || "gpt-5-mini",
-      input: prompt,
+      input: prompt + excelActionGuide + meetingGuide,
       text: { format: { type: "json_object" } },
       store: false,
     }),
