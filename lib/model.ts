@@ -1,4 +1,13 @@
-export type StudentSource = { name: string; text: string };
+export type StudentSource = {
+  name: string;
+  text: string;
+  observation?: string;
+  reflection?: string;
+  activity?: string;
+  className?: string;
+  number?: string;
+  date?: string;
+};
 export type StudentDraft = {
   name: string;
   source: string;
@@ -84,6 +93,47 @@ export type WorkResult = {
         targetSheet: string;
         targetCell: string;
       }
+    | {
+        type: "insertRows";
+        sheet: string;
+        startRow: number;
+        count: number;
+      }
+    | {
+        type: "insertColumns";
+        sheet: string;
+        startColumn: number;
+        count: number;
+      }
+    | { type: "merge"; sheet: string; range: string }
+    | {
+        type: "format";
+        sheet: string;
+        range: string;
+        numberFormat?: string;
+        bold?: boolean;
+        horizontal?: "left" | "center" | "right";
+        wrapText?: boolean;
+        fillColor?: string;
+        fontColor?: string;
+      }
+    | {
+        type: "pageSetup";
+        sheet: string;
+        orientation?: "portrait" | "landscape";
+        paperSize?: "A4" | "A3";
+        fitToPage?: boolean;
+        repeatRows?: string;
+      }
+    | {
+        type: "pivotSummary";
+        sheet: string;
+        range: string;
+        rowColumn: number;
+        valueColumn?: number;
+        operation: "count" | "sum" | "average";
+        targetSheet: string;
+      }
   >;
 };
 export type FileAnalysis = {
@@ -146,7 +196,7 @@ export type Task = {
   outputFormat?: "auto" | "xlsx" | "docx" | "pdf" | "pptx" | "txt" | "csv";
   studentDrafts?: StudentDraft[];
   studentValidation?: string[];
-  studentRecordType?: "subject" | "behavior" | "general";
+  studentRecordType?: "subject" | "behavior" | "activity" | "general";
   apiConsent?: { approvedAt: string; fileIds: string[]; masked: boolean };
   createdAt: string;
   updatedAt: string;

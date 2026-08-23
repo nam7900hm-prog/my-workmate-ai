@@ -22,17 +22,47 @@ function findStudents(rows: Record<string, unknown>[]): StudentSource[] {
   if (!rows.length) return [];
   const keys = Object.keys(rows[0]);
   const nameKey = keys.find((k) => /(학생명|성명|이름)/.test(k));
-  const textKey = keys.find(
+  const observationKey = keys.find((k) =>
+    /(교사.*(관찰|메모|기록|평가)|관찰.*(내용|기록)|교사의견)/.test(k),
+  );
+  const reflectionKey = keys.find(
     (k) =>
-      /(소감문|소감|활동내용|활동 내용|내용|학생글|학생 글)/.test(k) &&
+      /(소감문|소감|학생글|학생 글|느낀점|느낀 점)/.test(k) &&
       k !== nameKey,
   );
-  if (!nameKey || !textKey) return [];
+  const activityKey = keys.find(
+    (k) => /(활동내용|활동 내용|수행내용|수행 내용|참여내용|참여 내용)/.test(k),
+  );
+  const fallbackTextKey = keys.find(
+    (k) => /(내용|기록|원문)/.test(k) && k !== nameKey,
+  );
+  const classKey = keys.find((k) => /(학년반|학급|반)/.test(k));
+  const numberKey = keys.find((k) => /(번호|학번)/.test(k));
+  const dateKey = keys.find((k) => /(날짜|일자|활동일)/.test(k));
+  if (!nameKey || !(observationKey || reflectionKey || activityKey || fallbackTextKey)) return [];
   return rows
-    .map((r) => ({
-      name: String(r[nameKey] ?? "").trim(),
-      text: String(r[textKey] ?? "").trim(),
-    }))
+    .map((r) => {
+      const observation = String(r[observationKey || ""] ?? "").trim();
+      const reflection = String(r[reflectionKey || ""] ?? "").trim();
+      const activity = String(r[activityKey || ""] ?? "").trim();
+      const fallback = String(r[fallbackTextKey || ""] ?? "").trim();
+      const labeled = [
+        observation && `교사 관찰: ${observation}`,
+        activity && `활동 내용: ${activity}`,
+        reflection && `학생 소감: ${reflection}`,
+        !observation && !activity && !reflection && fallback && `입력 내용: ${fallback}`,
+      ].filter(Boolean).join("\n");
+      return {
+        name: String(r[nameKey] ?? "").trim(),
+        text: labeled,
+        observation: observation || undefined,
+        reflection: reflection || undefined,
+        activity: activity || undefined,
+        className: String(r[classKey || ""] ?? "").trim() || undefined,
+        number: String(r[numberKey || ""] ?? "").trim() || undefined,
+        date: String(r[dateKey || ""] ?? "").trim() || undefined,
+      };
+    })
     .filter((x) => x.name && x.text)
     .slice(0, 500);
 }
@@ -262,6 +292,11 @@ export async function analyzeFile(
   }
   if (ext === "pdf") {
     const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    if (!pdfjs.GlobalWorkerOptions.workerSrc)
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
+        import.meta.url,
+      ).toString();
     const pdf = await pdfjs.getDocument({
       data: new Uint8Array(await file.arrayBuffer()),
     }).promise;
@@ -288,6 +323,20 @@ export async function analyzeFile(
         analyzedAt: now(),
       },
       students: students.length ? students : undefined,
+    };
+  }
+  if (ext === "hwp") {
+    return {
+      analysis: {
+        kind: "hwp",
+        summary: "HWP 문서를 등록했습니다. 이 컴퓨터의 한글 2018에서 PDF로 변환할 수 있습니다.",
+        text: "",
+        details: ["현재 상태: PDF 변환 전", "PDF 변환 후 본문·표 분석 가능"],
+        warnings: [
+          "웹에 배포된 앱은 사용자 컴퓨터의 한글 2018을 직접 실행할 수 없습니다. 변환된 PDF를 함께 등록해 주세요.",
+        ],
+        analyzedAt: now(),
+      },
     };
   }
   if (["pptx", "hwpx"].includes(ext)) {

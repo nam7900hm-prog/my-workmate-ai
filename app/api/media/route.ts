@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
             content: [
               {
                 type: "input_text",
-                text: "이 PDF의 보이는 글자와 표를 페이지 순서대로 추출하세요. 학생 활동지라면 학생 이름과 해당 학생이 실제로 쓴 내용만 분리하세요. 알아볼 수 없는 글자는 추측하지 말고 [판독 불가]로 표시하세요. JSON만 반환하세요. 형식은 {\"text\":\"전체 추출문\",\"students\":[{\"name\":\"학생 이름\",\"text\":\"해당 학생의 실제 글\"}],\"warnings\":[\"확인할 내용\"]}입니다.",
+                text: "이 PDF의 보이는 글자와 표를 페이지 순서대로 추출하세요. 학생 활동지라면 학생 이름과 학생이 실제로 쓴 소감과 교사가 쓴 관찰 기록과 활동 내용과 학급 번호 날짜를 서로 구분하세요. 알아볼 수 없는 글자는 추측하지 말고 [판독 불가]로 표시하세요. text에는 교사 관찰과 활동 내용과 학생 소감을 이름표와 함께 합쳐 넣으세요. JSON만 반환하세요. 형식은 {\"text\":\"전체 추출문\",\"students\":[{\"name\":\"학생 이름\",\"text\":\"구분 표시된 입력 원문\",\"observation\":\"교사 관찰 또는 빈 문자열\",\"reflection\":\"학생 소감 또는 빈 문자열\",\"activity\":\"활동 내용 또는 빈 문자열\",\"className\":\"학급 또는 빈 문자열\",\"number\":\"번호 또는 빈 문자열\",\"date\":\"날짜 또는 빈 문자열\"}],\"warnings\":[\"확인할 내용\"]}입니다.",
               },
               {
                 type: "input_file",
@@ -137,13 +137,22 @@ export async function POST(req: NextRequest) {
     const students = Array.isArray(parsed.students)
       ? parsed.students
           .filter(
-            (item): item is { name: string; text: string } =>
+            (item): item is { name: string; text: string; observation?: string; reflection?: string; activity?: string; className?: string; number?: string; date?: string } =>
               Boolean(item) &&
               typeof item === "object" &&
               typeof (item as Record<string, unknown>).name === "string" &&
               typeof (item as Record<string, unknown>).text === "string",
           )
-          .map((item) => ({ name: item.name.trim(), text: item.text.trim() }))
+          .map((item) => ({
+            name: item.name.trim(),
+            text: item.text.trim(),
+            observation: typeof item.observation === "string" ? item.observation.trim() : undefined,
+            reflection: typeof item.reflection === "string" ? item.reflection.trim() : undefined,
+            activity: typeof item.activity === "string" ? item.activity.trim() : undefined,
+            className: typeof item.className === "string" ? item.className.trim() : undefined,
+            number: typeof item.number === "string" ? item.number.trim() : undefined,
+            date: typeof item.date === "string" ? item.date.trim() : undefined,
+          }))
           .filter((item) => item.name && item.text)
           .slice(0, 500)
       : [];

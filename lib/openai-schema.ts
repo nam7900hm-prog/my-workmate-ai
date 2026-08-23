@@ -185,6 +185,58 @@ export function normalizeWorkResult(value: unknown): WorkResult {
           targetSheet: action.targetSheet,
           targetCell: action.targetCell,
         });
+      if (
+        (action.type === "insertRows" || action.type === "insertColumns") &&
+        typeof (action.type === "insertRows" ? action.startRow : action.startColumn) === "number" &&
+        Number.isInteger(action.type === "insertRows" ? action.startRow : action.startColumn) &&
+        typeof action.count === "number" &&
+        Number.isInteger(action.count) &&
+        action.count >= 1 &&
+        action.count <= 1000
+      )
+        excelActions.push(
+          action.type === "insertRows"
+            ? { type: "insertRows", sheet: action.sheet, startRow: action.startRow as number, count: action.count }
+            : { type: "insertColumns", sheet: action.sheet, startColumn: action.startColumn as number, count: action.count },
+        );
+      if (action.type === "merge" && typeof action.range === "string")
+        excelActions.push({ type: "merge", sheet: action.sheet, range: action.range });
+      if (action.type === "format" && typeof action.range === "string")
+        excelActions.push({
+          type: "format",
+          sheet: action.sheet,
+          range: action.range,
+          numberFormat: typeof action.numberFormat === "string" ? action.numberFormat : undefined,
+          bold: typeof action.bold === "boolean" ? action.bold : undefined,
+          horizontal: ["left", "center", "right"].includes(String(action.horizontal)) ? action.horizontal as "left" | "center" | "right" : undefined,
+          wrapText: typeof action.wrapText === "boolean" ? action.wrapText : undefined,
+          fillColor: typeof action.fillColor === "string" ? action.fillColor : undefined,
+          fontColor: typeof action.fontColor === "string" ? action.fontColor : undefined,
+        });
+      if (action.type === "pageSetup")
+        excelActions.push({
+          type: "pageSetup",
+          sheet: action.sheet,
+          orientation: action.orientation === "landscape" ? "landscape" : "portrait",
+          paperSize: action.paperSize === "A3" ? "A3" : "A4",
+          fitToPage: action.fitToPage !== false,
+          repeatRows: typeof action.repeatRows === "string" ? action.repeatRows : undefined,
+        });
+      if (
+        action.type === "pivotSummary" &&
+        typeof action.range === "string" &&
+        typeof action.rowColumn === "number" && Number.isInteger(action.rowColumn) && action.rowColumn >= 1 &&
+        typeof action.targetSheet === "string" && action.targetSheet.trim()
+      )
+        excelActions.push({
+          type: "pivotSummary",
+          sheet: action.sheet,
+          range: action.range,
+          rowColumn: action.rowColumn,
+          valueColumn: typeof action.valueColumn === "number" && Number.isInteger(action.valueColumn) && action.valueColumn >= 1 ? action.valueColumn : undefined,
+          operation: action.operation === "sum" || action.operation === "average" ? action.operation : "count",
+          targetSheet: action.targetSheet.slice(0, 31),
+        });
     }
   return {
     kind,

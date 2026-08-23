@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import type {
   FileItem,
   Plan,
@@ -25,6 +26,7 @@ import { maskText } from "@/lib/privacy";
 import { deleteFileBlob, saveFileBlob, storedFile } from "@/lib/file-db";
 import { safeExcelFormula } from "@/lib/excel-security";
 import { applyStructuralExcelAction } from "@/lib/excel-structural-actions";
+import { studentDraftProblems } from "@/lib/student-text";
 type UploadList = FileList | File[] | null;
 type View =
   | "home"
@@ -62,6 +64,8 @@ function studentRecordType(request: string): Task["studentRecordType"] | null {
     return "behavior";
   if (/세특|세부\s*특기|세부\s*능력|교과.*특기/.test(normalized))
     return "subject";
+  if (/창체|창의적\s*체험|진로\s*활동|동아리\s*활동|자율\s*활동/.test(normalized))
+    return "activity";
   if (/생기부|생활\s*기록부/.test(normalized)) return "general";
   return null;
 }
@@ -70,6 +74,8 @@ function studentRecordLabel(type: Task["studentRecordType"] | null) {
     ? "교과 세부능력 및 특기사항"
     : type === "behavior"
       ? "행동특성 및 종합의견"
+      : type === "activity"
+        ? "창의적 체험활동"
       : "생활기록부";
 }
 function resultRows(result: WorkResult) {
@@ -81,6 +87,97 @@ function resultRows(result: WorkResult) {
     .split(/\n+/)
     .filter(Boolean)
     .map((line) => [line]);
+}
+function previewTableRows(result: WorkResult) {
+  const matrix = [
+    [...(result.columns || [])],
+    ...(result.rows || []).map((row) => [...row]),
+  ].map((row) => row.map((value) => String(value ?? "")));
+  const read = (address: string) => {
+    const match = address.replace(/\$/g, "").match(/^([A-Z]{1,3})([1-9][0-9]*)$/i);
+    if (!match) return "";
+    let column = 0;
+    for (const char of match[1].toUpperCase())
+      column = column * 26 + char.charCodeAt(0) - 64;
+    return matrix[Number(match[2]) - 1]?.[column - 1] ?? "";
+  };
+  const write = (address: string, value: number) => {
+    const match = address.replace(/\$/g, "").match(/^([A-Z]{1,3})([1-9][0-9]*)$/i);
+    if (!match) return;
+    let column = 0;
+    for (const char of match[1].toUpperCase())
+      column = column * 26 + char.charCodeAt(0) - 64;
+    const row = Number(match[2]) - 1;
+    if (matrix[row]) matrix[row][column - 1] = String(value);
+  };
+  const columnNumber = (letters: string) => {
+    let value = 0;
+    for (const char of letters.replace(/\$/g, "").toUpperCase())
+      value = value * 26 + char.charCodeAt(0) - 64;
+    return value - 1;
+  };
+  for (const action of result.excelActions || []) {
+    if (action.type !== "formula") continue;
+    const formula = action.formula.replace(/^=/, "").replace(/\s+/g, "");
+    const sumif = formula.match(/^SUMIF\(\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+),(\$?[A-Z]+\$?\d+),\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)\)$/i);
+    if (sumif && sumif[1].toUpperCase() === sumif[3].toUpperCase() && sumif[6].toUpperCase() === sumif[8].toUpperCase()) {
+      const criteria = read(sumif[5]);
+      const criteriaColumn = columnNumber(sumif[1]);
+      const sumColumn = columnNumber(sumif[6]);
+      let total = 0;
+      const start = Number(sumif[2]) - 1;
+      const end = Number(sumif[4]) - 1;
+      for (let row = start; row <= end; row++)
+        if ((matrix[row]?.[criteriaColumn] ?? "") === criteria)
+          total += Number(matrix[row]?.[sumColumn] || 0);
+      write(action.cell, total);
+      continue;
+    }
+    const sum = formula.match(/^SUM\(\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)\)$/i);
+    if (sum && sum[1].toUpperCase() === sum[3].toUpperCase()) {
+      const column = columnNumber(sum[1]);
+      let total = 0;
+      for (let row = Number(sum[2]) - 1; row <= Number(sum[4]) - 1; row++)
+        total += Number(matrix[row]?.[column] || 0);
+      write(action.cell, total);
+    }
+  }
+  return matrix.slice(1);
+}
+function excelActionDescription(
+  action: NonNullable<WorkResult["excelActions"]>[number],
+) {
+  if (action.type === "replace")
+    return `${action.sheet} 시트 ${action.range || "사용 범위"}에서 ${action.find}을 ${action.replace}으로 바꿈.`;
+  if (action.type === "set")
+    return `${action.sheet} 시트 ${action.cell}에 ${action.value}을 입력함.`;
+  if (action.type === "formula")
+    return `${action.sheet} 시트 ${action.cell}에 =${action.formula.replace(/^=/, "")} 계산식을 입력함.`;
+  if (action.type === "highlight")
+    return `${action.sheet} 시트 ${action.range || "사용 범위"}에서 ${action.value}과 같은 셀을 색으로 표시함.`;
+  if (action.type === "conditional")
+    return `${action.sheet} 시트 ${action.range}에 입력값에 따라 바뀌는 조건부서식을 설정함.`;
+  if (action.type === "dataValidation")
+    return `${action.sheet} 시트 ${action.range}에 목록에서 고르는 드롭다운을 설정함.`;
+  if (action.type === "sort")
+    return `${action.sheet} 시트 ${action.range}을 ${action.column}번째 열 기준 ${action.order === "desc" ? "내림차순" : "오름차순"}으로 정렬함.`;
+  if (action.type === "filter")
+    return `${action.sheet} 시트 ${action.range}의 제목 행에 필터를 설정함.`;
+  if (action.type === "removeDuplicates")
+    return `${action.sheet} 시트 ${action.range}에서 ${action.columns.join(" · ")}번째 열이 같은 중복 행을 제거함.`;
+  if (action.type === "insertRows")
+    return `${action.sheet} 시트 ${action.startRow}행부터 빈 행 ${action.count}개를 추가함.`;
+  if (action.type === "insertColumns")
+    return `${action.sheet} 시트 ${action.startColumn}번째 열부터 빈 열 ${action.count}개를 추가함.`;
+  if (action.type === "merge")
+    return `${action.sheet} 시트 ${action.range} 셀을 병합함.`;
+  if (action.type === "format")
+    return `${action.sheet} 시트 ${action.range}에 숫자·날짜·정렬·글꼴 표시 형식을 적용함.`;
+  if (action.type === "pageSetup")
+    return `${action.sheet} 시트의 용지 방향과 인쇄 맞춤을 설정함.`;
+  if (action.type === "pivotSummary")
+    return `${action.sheet} 시트 ${action.range}을 항목별로 ${action.operation === "sum" ? "합계" : action.operation === "average" ? "평균" : "개수"} 집계하여 ${action.targetSheet} 요약표를 만듦. 네이티브 피벗표가 아닌 일반 요약표임.`;
+  return `${action.sheet} 시트 ${action.range}의 행과 열을 바꾸어 ${action.targetSheet} 시트 ${action.targetCell}부터 배치함.`;
 }
 
 async function wordBlob(result: WorkResult) {
@@ -376,7 +473,15 @@ export default function App() {
   const task = store.tasks.find((x) => x.id === taskId);
   useEffect(() => {
     setMounted(true);
-    setStore(load());
+    const saved = load();
+    setStore(saved);
+    if (location.hash.slice(1) === "task") {
+      const recent = saved.tasks.find((item) => item.status === "draft") || saved.tasks[0];
+      if (recent) {
+        setTaskId(recent.id);
+        setSelected(recent.fileIds);
+      } else history.replaceState({}, "", "#home");
+    }
     const sync = () => {
       const h = location.hash.slice(1) as View;
       setView(tabs.some((x) => x[0] === h) || h === "task" ? h : "home");
@@ -470,6 +575,7 @@ export default function App() {
           "ogg",
           "wav",
           "webm",
+          "hwp",
           "hwpx",
         ].includes(ext);
       try {
@@ -648,7 +754,28 @@ export default function App() {
   function makePlan() {
     if (!task?.request.trim())
       return setNotice("원하는 일을 글이나 말로 설명해 주세요.");
+    if (studentRecordType(task.request)) {
+      const students = studentSources(task);
+      if (!students.length)
+        return setNotice(
+          "선택한 자료에서 학생 활동 내용을 읽지 못했습니다. 글을 직접 입력하거나 이름과 활동 내용이 있는 Excel 또는 읽을 수 있는 PDF를 선택해 주세요.",
+        );
+      return setPendingApi("students");
+    }
     setPendingApi("plan");
+  }
+  function studentSources(current: Task): StudentSource[] {
+    const chosen = store.files.filter((item) => current.fileIds.includes(item.id));
+    const structured = chosen.flatMap((item) => item.students || []).slice(0, 200);
+    if (structured.length) return structured;
+    const analyzed = chosen
+      .filter((item) => item.analysis?.text?.trim())
+      .map((item) => ({ name: item.name, text: item.analysis!.text.trim() }))
+      .slice(0, 200);
+    if (analyzed.length) return analyzed;
+    if (!chosen.length && current.request.trim())
+      return [{ name: "직접 입력", text: current.request.trim() }];
+    return [];
   }
   async function runPlan() {
     if (!task) return;
@@ -785,22 +912,20 @@ export default function App() {
   }
   function makeStudentDrafts() {
     if (!task) return;
-    const students = store.files
-      .filter((x) => task.fileIds.includes(x.id))
-      .flatMap((x) => x.students || [])
-      .slice(0, 200);
+    const students = studentSources(task);
     if (!students.length)
       return setNotice(
-        "이름과 소감문 열이 있는 Excel 또는 CSV 자료가 필요합니다.",
+        "학생 활동 내용을 읽지 못했습니다. 글을 직접 입력하거나 이름과 활동 내용이 있는 자료를 선택해 주세요.",
       );
     setPendingApi("students");
   }
   async function runStudentDrafts() {
     if (!task) return;
-    const students = store.files
-      .filter((x) => task.fileIds.includes(x.id))
-      .flatMap((x) => x.students || [])
-      .slice(0, 200);
+    const students = studentSources(task);
+    if (!students.length) {
+      setPendingApi(null);
+      return setNotice("학생 활동 내용을 읽지 못했습니다.");
+    }
     const masked = students.map((s, i) => ({
       name: `학생${String(i + 1).padStart(3, "0")}`,
       text: maskText(
@@ -934,11 +1059,11 @@ export default function App() {
     const columns = [
       "학생 이름",
       "입력 근거",
-      "1안 관찰 중심",
-      "2안 성장 중심",
-      "3안 AI 추천",
-      "선택",
-      "교사 최종본",
+      "1안",
+      "2안",
+      "3안",
+      "최종 선택",
+      "검토 상태",
     ];
     const rows = task.studentDrafts.map((d) => [
       d.name,
@@ -946,17 +1071,17 @@ export default function App() {
       d.factDraft,
       d.inferredDraft,
       d.recommendedDraft || "",
-      d.selected || "",
-      d.finalText,
+      d.finalText || "",
+      d.reviewed ? "교사 확인 완료" : "확인 필요",
     ]);
     const result: WorkResult = {
       kind: "table",
-      title: "학생별 생기부 교사수정본",
+      title: "학생별 생활기록부 세 가지 문안",
       columns,
       rows,
       validation: [
-        `전체 ${task.studentDrafts.length}명 교사 확인 완료`,
-        "쉼표 금지와 문장 마침표 검사 완료",
+        `전체 ${task.studentDrafts.length}명 세 가지 문안 생성 완료`,
+        "각 문안 200자 이상과 자연스러운 기록 문체와 마침표 검사 완료",
         ...(task.studentValidation?.length
           ? [`유사 문장 확인 필요 ${task.studentValidation.length}건`]
           : ["높은 유사도의 문장 쌍 없음"]),
@@ -983,13 +1108,13 @@ export default function App() {
     if (format === "csv" || format === "txt")
       return download(
         new Blob([csv], { type: "text/csv;charset=utf-8" }),
-        `학생별_생기부_교사수정본.${format === "txt" ? "txt" : "csv"}`,
+        `학생별_생활기록부_세가지문안.${format === "txt" ? "txt" : "csv"}`,
       );
     const XLSX = await import("xlsx");
     const sheet = XLSX.utils.aoa_to_sheet([columns, ...rows]);
     const book = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(book, sheet, "교사수정본");
-    XLSX.writeFile(book, "학생별_생기부_교사수정본.xlsx");
+    XLSX.utils.book_append_sheet(book, sheet, "세가지문안");
+    XLSX.writeFile(book, "학생별_생활기록부_세가지문안.xlsx");
   }
   async function downloadWorkResult() {
     if (!task?.workResult) return;
@@ -1247,7 +1372,13 @@ export default function App() {
           */
           if (
             action.type === "conditional" ||
-            action.type === "dataValidation"
+            action.type === "dataValidation" ||
+            action.type === "insertRows" ||
+            action.type === "insertColumns" ||
+            action.type === "merge" ||
+            action.type === "format" ||
+            action.type === "pageSetup" ||
+            action.type === "pivotSummary"
           ) {
             actionCount++;
             continue;
@@ -1338,13 +1469,74 @@ export default function App() {
           }
           if (filled) break;
         }
-      } else book = XLSX.utils.book_new();
+      } else {
+        book = XLSX.utils.book_new();
+        const resultSheet = XLSX.utils.aoa_to_sheet([columns, ...rows]);
+        let resultSheetName = safeTitle.slice(0, 31) || "AI 결과";
+        let resultSheetSuffix = 2;
+        while (book.SheetNames.includes(resultSheetName))
+          resultSheetName = `${safeTitle.slice(0, 27)} ${resultSheetSuffix++}`.slice(0, 31);
+        XLSX.utils.book_append_sheet(book, resultSheet, resultSheetName);
+        let actionCount = 0;
+        for (const action of (result.excelActions || []).slice(0, 500)) {
+          const targetSheet = book.Sheets[action.sheet] ||
+            (action.sheet === result.title ? resultSheet : undefined);
+          if (!targetSheet) continue;
+          if (action.type !== "set" && action.type !== "formula") continue;
+          if (!/^[A-Z]{1,3}[1-9][0-9]{0,6}$/i.test(action.cell)) continue;
+          const address = action.cell.toUpperCase();
+          if (action.type === "formula") {
+            const formula = action.formula.replace(/^=/, "").trim();
+            if (!safeExcelFormula(formula)) continue;
+            targetSheet[address] = { t: "n", f: formula };
+          } else {
+            targetSheet[address] = {
+              t: typeof action.value === "number" ? "n" : "s",
+              v: action.value,
+            };
+          }
+          const existing = XLSX.utils.decode_range(targetSheet["!ref"] || address);
+          const point = XLSX.utils.decode_cell(address);
+          existing.s.r = Math.min(existing.s.r, point.r);
+          existing.s.c = Math.min(existing.s.c, point.c);
+          existing.e.r = Math.max(existing.e.r, point.r);
+          existing.e.c = Math.max(existing.e.c, point.c);
+          targetSheet["!ref"] = XLSX.utils.encode_range(existing);
+          actionCount++;
+        }
+        filled = actionCount > 0 || rows.length > 0;
+      }
       if (!filled) {
         const sheet = XLSX.utils.aoa_to_sheet([columns, ...rows]);
         let name = "AI 결과";
         let suffix = 2;
         while (book.SheetNames.includes(name)) name = `AI 결과 ${suffix++}`;
         XLSX.utils.book_append_sheet(book, sheet, name);
+      }
+      if (result.excelActions?.length || result.validation.length) {
+        let guideName = "작업 설명";
+        let guideSuffix = 2;
+        while (book.SheetNames.includes(guideName))
+          guideName = `작업 설명 ${guideSuffix++}`;
+        const guideRows = [
+          ["구분", "내용"],
+          ["결과 제목", result.title],
+          ...((result.excelActions || []).map((action, index) => [
+            `작업 ${index + 1}`,
+            excelActionDescription(action),
+          ])),
+          ...result.validation.map((item, index) => [
+            `검증 ${index + 1}`,
+            item,
+          ]),
+          ...result.warnings.map((item, index) => [
+            `확인 필요 ${index + 1}`,
+            item,
+          ]),
+        ];
+        const guideSheet = XLSX.utils.aoa_to_sheet(guideRows);
+        guideSheet["!cols"] = [{ wch: 18 }, { wch: 90 }];
+        XLSX.utils.book_append_sheet(book, guideSheet, guideName);
       }
       let output = XLSX.write(book, {
         type: "array",
@@ -1355,7 +1547,13 @@ export default function App() {
         (action) =>
           action.type === "highlight" ||
           action.type === "conditional" ||
-          action.type === "dataValidation",
+          action.type === "dataValidation" ||
+          action.type === "insertRows" ||
+          action.type === "insertColumns" ||
+          action.type === "merge" ||
+          action.type === "format" ||
+          action.type === "pageSetup" ||
+          action.type === "pivotSummary",
       );
       if (styleActions.length) {
         const ExcelJS = await import("exceljs");
@@ -1366,6 +1564,76 @@ export default function App() {
         for (const action of styleActions) {
           const sheet = styled.getWorksheet(action.sheet);
           if (!sheet) continue;
+          if (action.type === "insertRows") {
+            if (action.startRow >= 1 && action.count <= 1000)
+              sheet.spliceRows(action.startRow, 0, ...Array.from({ length: action.count }, () => []));
+            continue;
+          }
+          if (action.type === "insertColumns") {
+            if (action.startColumn >= 1 && action.count <= 1000)
+              sheet.spliceColumns(action.startColumn, 0, ...Array.from({ length: action.count }, () => []));
+            continue;
+          }
+          if (action.type === "merge") {
+            if (/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/i.test(action.range))
+              try { sheet.mergeCells(action.range.toUpperCase()); } catch {}
+            continue;
+          }
+          if (action.type === "pageSetup") {
+            sheet.pageSetup.orientation = action.orientation || "portrait";
+            sheet.pageSetup.paperSize = (action.paperSize === "A3" ? 8 : 9) as any;
+            sheet.pageSetup.fitToPage = action.fitToPage !== false;
+            sheet.pageSetup.fitToWidth = 1;
+            sheet.pageSetup.fitToHeight = 0;
+            if (action.repeatRows && /^\$?[1-9][0-9]{0,6}:\$?[1-9][0-9]{0,6}$/.test(action.repeatRows))
+              sheet.pageSetup.printTitlesRow = action.repeatRows.replace(/\$/g, "");
+            continue;
+          }
+          if (action.type === "format") {
+            if (!/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/i.test(action.range)) continue;
+            const bounds = XLSX.utils.decode_range(action.range);
+            if ((bounds.e.r - bounds.s.r + 1) * (bounds.e.c - bounds.s.c + 1) > 100000) continue;
+            const fill = (action.fillColor || "").replace(/^#/, "").toUpperCase();
+            const font = (action.fontColor || "").replace(/^#/, "").toUpperCase();
+            for (let row = bounds.s.r + 1; row <= bounds.e.r + 1; row++)
+              for (let column = bounds.s.c + 1; column <= bounds.e.c + 1; column++) {
+                const cell = sheet.getCell(row, column);
+                if (action.numberFormat) cell.numFmt = action.numberFormat.slice(0, 100);
+                if (action.bold !== undefined || /^[0-9A-F]{6}$/.test(font))
+                  cell.font = { ...cell.font, bold: action.bold ?? cell.font?.bold, color: /^[0-9A-F]{6}$/.test(font) ? { argb: `FF${font}` } : cell.font?.color };
+                if (action.horizontal || action.wrapText !== undefined)
+                  cell.alignment = { ...cell.alignment, horizontal: action.horizontal ?? cell.alignment?.horizontal, wrapText: action.wrapText ?? cell.alignment?.wrapText };
+                if (/^[0-9A-F]{6}$/.test(fill))
+                  cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: `FF${fill}` } };
+              }
+            continue;
+          }
+          if (action.type === "pivotSummary") {
+            if (!/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/i.test(action.range)) continue;
+            const bounds = XLSX.utils.decode_range(action.range);
+            const width = bounds.e.c - bounds.s.c + 1;
+            if (action.rowColumn > width || (action.valueColumn && action.valueColumn > width)) continue;
+            const grouped = new Map<string, { count: number; sum: number }>();
+            for (let row = bounds.s.r + 2; row <= bounds.e.r + 1; row++) {
+              const key = String(sheet.getCell(row, bounds.s.c + action.rowColumn).value ?? "").trim();
+              if (!key) continue;
+              const raw = action.valueColumn ? sheet.getCell(row, bounds.s.c + action.valueColumn).value : 1;
+              const number = typeof raw === "number" ? raw : Number(raw);
+              const current = grouped.get(key) || { count: 0, sum: 0 };
+              current.count++;
+              if (Number.isFinite(number)) current.sum += number;
+              grouped.set(key, current);
+            }
+            let name = action.targetSheet.trim().slice(0, 31);
+            const old = styled.getWorksheet(name);
+            if (old) styled.removeWorksheet(old.id);
+            const summary = styled.addWorksheet(name);
+            summary.addRow(["항목", action.operation === "sum" ? "합계" : action.operation === "average" ? "평균" : "개수"]);
+            grouped.forEach((value, key) => summary.addRow([key, action.operation === "sum" ? value.sum : action.operation === "average" ? value.sum / value.count : value.count]));
+            summary.getRow(1).font = { bold: true };
+            summary.columns = [{ width: 28 }, { width: 18 }];
+            continue;
+          }
           if (action.type === "dataValidation") {
             if (
               !/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/i.test(
@@ -1396,11 +1664,10 @@ export default function App() {
                 });
               }
               validationColumn++;
-              values.forEach((value, index) =>
-                validationSheet
-                  .getCell(index + 1, validationColumn)
-                  .setValue(value),
-              );
+              values.forEach((value, index) => {
+                validationSheet.getCell(index + 1, validationColumn).value =
+                  value;
+              });
               const letter = XLSX.utils.encode_col(validationColumn - 1);
               formula = `'${validationSheet.name}'!$${letter}$1:$${letter}$${values.length}`;
             }
@@ -1935,7 +2202,7 @@ function Home({
   return (
     <div className="home">
       <section className="guide">
-        <img src="/assistant-character.png" />
+        <Image src="/assistant-character.png" alt="업무를 안내하는 AI 비서" width={220} height={220} priority />
         <div>
           <b>자료나 양식을 선택하고</b>
           <strong>만들고 싶은 결과를 글이나 말로 설명해 주세요.</strong>
@@ -1960,13 +2227,43 @@ function Home({
     </div>
   );
 }
+const companyPromptExamples = [
+  ["두 자료 합쳐 매출현황", "거래내역.xlsx + 거래처목록.xlsx", "두 자료를 거래처코드로 연결해서 A기업의 월별 매출현황을 만들어줘. 거래처명과 담당자도 함께 표시하고 연결되지 않는 코드는 별도 표로 보여줘.", "거래처코드를 기준으로 자료를 찾고 월별 금액을 합산함"],
+  ["거래처별 매출 합계", "매출내역.xlsx", "거래처별 매출금액을 모두 더해서 금액이 큰 순서로 정리해줘. 전체 매출 합계도 마지막에 표시해줘.", "조건별 합계와 전체 합계를 계산함"],
+  ["월별 매출 증감", "월별매출.xlsx", "각 달의 매출을 앞 달과 비교해서 늘어난 금액과 줄어든 금액과 증감률을 오른쪽에 표시해줘.", "이전 달 금액을 빼고 증감률을 계산함"],
+  ["목표 대비 달성률", "매출목표.xlsx + 매출실적.xlsx", "부서별 목표와 실제 매출을 합쳐서 달성률을 계산해줘. 100퍼센트 이상은 파란색으로 표시해줘.", "실적을 목표로 나누고 조건에 따라 색을 표시함"],
+  ["미수금 찾기", "청구입금내역.xlsx", "청구금액에서 입금금액을 빼서 아직 받지 못한 금액을 계산해줘. 미수금이 있는 거래처만 따로 보여줘.", "청구액에서 입금액을 빼고 0보다 큰 행을 찾음"],
+  ["예산 잔액", "부서예산.xlsx", "부서별 예산에서 행사1부터 행사5까지 사용한 금액을 빼고 오른쪽 끝에 남은 금액을 표시해줘.", "예산에서 여러 사용액의 합계를 뺌"],
+  ["부서별 비용 평균", "경비내역.xlsx", "부서별 사용금액의 평균과 가장 큰 지출과 가장 작은 지출을 정리해줘.", "부서별 평균값과 최댓값과 최솟값을 계산함"],
+  ["재고 부족 찾기", "재고현황.xlsx", "현재 재고가 최소 필요수량보다 적은 품목만 찾아서 부족수량을 계산하고 빨간색으로 표시해줘.", "최소수량과 현재수량을 비교하고 차이를 계산함"],
+  ["중복 거래 제거", "거래내역.xlsx", "거래일자와 거래처와 금액이 모두 같은 중복 행을 찾아서 원본은 보존하고 중복을 제거한 새 표를 만들어줘.", "세 열이 모두 같은 행을 중복으로 판단함"],
+  ["누락값 점검", "직원명단.xlsx", "사번이나 부서나 연락처가 비어 있는 직원을 찾아서 누락된 항목을 표시해줘.", "빈 셀을 찾아 누락 항목을 표시함"],
+  ["근속기간 계산", "직원명단.xlsx", "입사일을 기준으로 오늘까지 근속연수와 근속개월을 계산해줘.", "입사일과 현재 날짜의 차이를 연과 월로 계산함"],
+  ["급여 조건 분류", "급여자료.xlsx", "기본급과 수당을 더해 지급합계를 만들고 지급합계가 300만원 이상인지 아닌지 구분해줘.", "여러 금액을 더하고 기준금액과 비교함"],
+  ["판매등급 만들기", "영업실적.xlsx", "매출이 1억원 이상이면 우수. 5천만원 이상이면 보통. 그보다 적으면 관리필요로 표시해줘.", "금액 구간을 순서대로 비교해 등급을 표시함"],
+  ["상품명 자동 연결", "주문내역.xlsx + 상품목록.xlsx", "주문내역의 상품코드로 상품목록에서 상품명과 단가를 찾아 넣고 수량을 곱해 주문금액을 계산해줘.", "상품코드로 값을 찾고 단가와 수량을 곱함"],
+  ["날짜별 주문 건수", "주문내역.xlsx", "주문일자별 주문 건수와 주문금액 합계를 표로 만들어줘.", "같은 날짜의 행 개수와 금액을 각각 집계함"],
+  ["지역별 고객 수", "고객목록.xlsx", "지역별 고객 수를 계산하고 고객이 많은 지역 순서로 정리해줘.", "지역이 같은 행의 개수를 세고 내림차순 정렬함"],
+  ["조건에 맞는 계약 찾기", "계약현황.xlsx", "계약종료일이 30일 이내이고 계약상태가 진행 중인 계약만 찾아서 보여줘.", "날짜 차이와 계약상태 두 조건을 함께 확인함"],
+  ["세로 자료를 가로 표로", "월별실적_세로형.xlsx", "세로로 적힌 부서와 월과 매출 자료를 부서는 세로에 두고 월은 가로에 놓은 표로 바꿔줘.", "항목의 방향을 바꾸고 부서와 월별로 합산함"],
+  ["선택 목록 만들기", "음료주문.xlsx", "직원 10명이 음료 종류를 목록에서 선택하게 만들고 오른쪽에 음료별 주문 수량 합계를 별도 표로 만들어줘.", "드롭다운을 만들고 선택된 음료별 개수를 계산함"],
+  ["오류와 누락 검증", "완성보고서.xlsx", "합계가 원자료와 맞는지 확인하고 빈칸과 중복과 계산 오류가 있는 행을 별도 검증표로 만들어줘.", "원자료 합계와 결과 합계를 비교하고 오류 행을 분리함"],
+] as const;
+
 function Help() {
   const [topic, setTopic] = useState("student");
+  const [helpTab, setHelpTab] = useState<"guide" | "examples">("guide");
+  const [copiedPrompt, setCopiedPrompt] = useState<number | null>(null);
   return (
     <Section
       title="사용설명"
       sub="어디에서 시작해도 같은 1~6단계 작업으로 연결됩니다."
     >
+      <div className="helpTabs">
+        <button className={helpTab === "guide" ? "active" : ""} onClick={() => setHelpTab("guide")}>사용 방법</button>
+        <button className={helpTab === "examples" ? "active" : ""} onClick={() => setHelpTab("examples")}>예시</button>
+      </div>
+      {helpTab === "guide" ? <>
       <div className="routes">
         <p>
           <b>내 자료에서</b> → 자료 선택 → 글·말로 설명 → 양식 선택(필요할 때) →
@@ -1995,6 +2292,18 @@ function Help() {
           추가할 수 있습니다.
         </p>
       </div>
+      <div className="note">
+        <b>한글 문서(HWP·HWPX)를 넣을 때</b>
+        <p>
+          HWPX는 앱이 글자를 바로 읽습니다. HWP는 이 컴퓨터에 설치된 한글
+          2018에서 PDF로 변환할 수 있으며 변환된 PDF를 넣으면 본문과 표를
+          분석할 수 있습니다.
+        </p>
+        <p>
+          인터넷에 배포된 앱은 내 컴퓨터의 한글 2018을 직접 실행할 수 없으므로
+          HWP는 변환 전 상태와 PDF 변환 완료 상태를 구분해서 표시합니다.
+        </p>
+      </div>
       <label className="helpSelect">
         <b>설명할 기능 선택</b>
         <select value={topic} onChange={(event) => setTopic(event.target.value)}>
@@ -2012,7 +2321,7 @@ function Help() {
           <div>
             <p><b>준비 자료</b> Excel은 학생 이름과 활동 내용 또는 소감문이 있는 열을 포함합니다. PDF는 글자 PDF와 스캔 활동지를 사용할 수 있습니다.</p>
             <p><b>요청 예시</b> 이 자료의 학생별 세특을 약 300자로 작성해줘. 교사가 확인할 수 있는 활동 근거를 사용하고 쉼표는 쓰지 마.</p>
-            <p><b>결과</b> 최대 200명까지 1안 관찰 중심과 2안 성장 중심과 3안 최종 추천을 보여 줍니다. 교사가 학생별로 선택하고 수정한 뒤 파일로 받습니다.</p>
+            <p><b>결과</b> 최대 200명까지 서로 다른 1안과 2안과 3안을 같은 비중으로 바로 보여 줍니다.</p>
             <p><b>구분</b> 세특은 수업과 교과 활동 중심입니다. 행동발달상황은 지속적으로 관찰한 책임감과 협력 및 생활 태도 중심입니다. 활동 소감은 학생이 직접 말하는 글로 작성합니다.</p>
           </div>
         </details>
@@ -2025,6 +2334,32 @@ function Help() {
             <p><b>요청 예시 3</b> 세로로 정리된 자료에서 학급은 가로로 두고 과목과 교사명과 수업내용은 왼쪽에 한 번만 표시해줘.</p>
             <p><b>요청 예시 4</b> 표 밖에 입력한 교사 이름과 같은 감독표 셀을 노란색으로 표시하고 특정 담당자는 파란색으로 표시해줘.</p>
             <p>원본은 그대로 보존하고 작업 사본과 새 결과 파일을 만듭니다.</p>
+            <h3 className="supportTitle">Excel 작업 가능 / 제한 작업</h3>
+            <div className="supportTableWrap">
+              <table className="supportTable">
+                <thead><tr><th>기능</th><th>상태</th><th>설명 또는 이유</th></tr></thead>
+                <tbody>
+                  <tr><td>Excel·CSV 자료 읽기</td><td><span className="statusOk">작업 가능</span></td><td>시트와 행·열과 표와 제목과 숫자와 날짜와 수식을 확인합니다.</td></tr>
+                  <tr><td>합계·평균·개수·조건 계산</td><td><span className="statusOk">작업 가능</span></td><td>필요한 셀에 수식을 넣고 새 Excel 파일로 만듭니다.</td></tr>
+                  <tr><td>두 자료 연결·값 찾기</td><td><span className="statusOk">작업 가능</span></td><td>거래처코드나 사번처럼 두 자료에 공통으로 있는 기준이 필요합니다.</td></tr>
+                  <tr><td>정렬·필터·중복제거</td><td><span className="statusOk">작업 가능</span></td><td>사용자가 요청한 범위에서 처리하고 처리 전후 행 수를 검증합니다.</td></tr>
+                  <tr><td>행·열 전환과 요약표</td><td><span className="statusOk">작업 가능</span></td><td>세로 자료를 가로 표로 바꾸거나 항목별 고정 요약표를 만듭니다.</td></tr>
+                  <tr><td>색 표시·표시형식·조건부서식</td><td><span className="statusOk">작업 가능</span></td><td>조건에 맞는 셀의 색과 금액·날짜 표시형식을 설정합니다.</td></tr>
+                  <tr><td>드롭다운 선택목록</td><td><span className="statusOk">작업 가능</span></td><td>직원명이나 상품명처럼 목록에서 고르게 만들 수 있습니다.</td></tr>
+                  <tr><td>원본을 보존한 새 파일 생성</td><td><span className="statusOk">작업 가능</span></td><td>원본을 직접 덮어쓰지 않고 작업 사본을 내려받습니다.</td></tr>
+                  <tr><td>완성한 Excel을 Google Sheets로 보내기</td><td><span className="statusOk">작업 가능</span></td><td>Google 계정을 연결하고 사용자가 승인하면 새 Google 스프레드시트로 보냅니다.</td></tr>
+                  <tr><td>네이티브 피벗테이블</td><td><span className="statusNo">제한 작업</span></td><td>Excel 고유 피벗 구조를 안정적으로 생성하지 못해 일반 요약표로 대신합니다.</td></tr>
+                  <tr><td>Excel 차트 자동 생성</td><td><span className="statusNo">제한 작업</span></td><td>차트에 사용할 요약자료는 만들지만 차트 개체 생성은 아직 연결되지 않았습니다.</td></tr>
+                  <tr><td>매크로·VBA·추가기능 실행</td><td><span className="statusNo">제한 작업</span></td><td>인터넷 앱은 사용자 컴퓨터의 Excel 프로그램과 매크로를 직접 실행할 수 없습니다.</td></tr>
+                  <tr><td>Power Query와 외부자료 자동 새로고침</td><td><span className="statusNo">제한 작업</span></td><td>사내 자료와 외부 서비스의 로그인·접근 권한과 별도 연결이 필요합니다.</td></tr>
+                  <tr><td>암호가 걸린 Excel 읽기</td><td><span className="statusNo">제한 작업</span></td><td>암호를 해제하지 않으면 파일 내용을 분석할 수 없습니다.</td></tr>
+                  <tr><td>최신 함수의 구형 Excel 사용</td><td><span className="statusNo">제한 작업</span></td><td>FILTER와 XLOOKUP 같은 최신 함수는 오래된 Excel에서 작동하지 않을 수 있습니다.</td></tr>
+                  <tr><td>수십만 행의 대용량 파일</td><td><span className="statusNo">제한 작업</span></td><td>브라우저와 휴대폰 메모리 제한 때문에 나누어 처리해야 할 수 있습니다.</td></tr>
+                  <tr><td>여러 사람의 실시간 공동편집</td><td><span className="statusNo">제한 작업</span></td><td>현재 앱은 Google Sheets처럼 같은 셀을 동시에 편집하는 구조가 아닙니다.</td></tr>
+                  <tr><td>Excel 고유 기능을 Google Sheets에 그대로 옮기기</td><td><span className="statusNo">제한 작업</span></td><td>매크로와 피벗테이블과 차트와 일부 조건부서식은 두 프로그램의 구조가 달라 그대로 유지되지 않을 수 있습니다.</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </details>
         <details open={topic === "beginner"} hidden={topic !== "beginner"}>
@@ -2060,6 +2395,30 @@ function Help() {
           </div>
         </details>
       </div>
+      </> : <div className="promptExamples">
+        <div className="note">
+          <b>회사 Excel 작업 요청문 20개</b>
+          <p>함수 이름을 몰라도 아래 문장을 그대로 복사하고 자신의 Excel 자료와 함께 사용할 수 있습니다. 파일명과 금액과 기준만 자신의 상황에 맞게 바꾸면 됩니다.</p>
+          <div className="exampleDownloads">
+            <a href="/examples/회사실무_가상입력자료.xlsx" download>가상 입력자료 다운로드</a>
+            <a href="/examples/회사실무_프롬프트20개_결과예시.xlsx" download>결과 예시 다운로드</a>
+          </div>
+        </div>
+        <div className="promptGrid">
+          {companyPromptExamples.map((example, index) => (
+            <article className="promptCard" key={example[0]}>
+              <small>예시 {index + 1}</small>
+              <h3>{example[0]}</h3>
+              <p><b>넣을 자료</b> {example[1]}</p>
+              <p className="promptText">{example[2]}</p>
+              <p><b>쉽게 풀이</b> {example[3]}</p>
+              <button onClick={async () => { await navigator.clipboard.writeText(example[2]); setCopiedPrompt(index); window.setTimeout(() => setCopiedPrompt(null), 1500); }}>
+                {copiedPrompt === index ? "복사됨" : "프롬프트 복사"}
+              </button>
+            </article>
+          ))}
+        </div>
+      </div>}
     </Section>
   );
 }
@@ -2085,6 +2444,50 @@ function Files({
   const [googleQuery, setGoogleQuery] = useState("");
   const [googleMessage, setGoogleMessage] = useState("");
   const [googleNeedsLogin, setGoogleNeedsLogin] = useState(false);
+  const [documentIndex, setDocumentIndex] = useState<{
+    keywords: string[];
+    documents: Array<{
+      번호: number;
+      원본경로: string;
+      원본형식: string;
+      변환PDF: string;
+      분류: string;
+      키워드: string;
+      본문글자수: number;
+      요약: string;
+      상태: string;
+    }>;
+  } | null>(null);
+  const [indexFilter, setIndexFilter] = useState("전체");
+  const [directFilter, setDirectFilter] = useState("");
+  useEffect(() => {
+    storedFile("private-document-index", "전체문서_분석색인.json", "application/json")
+      .then((file) => file?.text())
+      .then((value) => value && setDocumentIndex(JSON.parse(value)))
+      .catch(() => undefined);
+  }, []);
+  async function importDocumentIndex(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (!Array.isArray(data.documents) || !Array.isArray(data.keywords))
+        throw new Error("분석표 형식이 아닙니다.");
+      await saveFileBlob("private-document-index", file);
+      setDocumentIndex(data);
+      setIndexFilter("전체");
+      setDirectFilter("");
+    } catch (error) {
+      setGoogleMessage(error instanceof Error ? error.message : "분석표를 읽지 못했습니다.");
+    }
+  }
+  const activeFilter = indexFilter === "직접 입력" ? directFilter.trim() : indexFilter;
+  const filteredDocuments = (documentIndex?.documents || []).filter((document) => {
+    if (!activeFilter || activeFilter === "전체") return true;
+    return `${document.원본경로} ${document.분류} ${document.키워드} ${document.요약}`
+      .toLocaleLowerCase()
+      .includes(activeFilter.toLocaleLowerCase());
+  });
   async function loadGoogleSheets() {
     setGoogleMessage("Google Sheets 목록을 불러오는 중입니다.");
     const response = await fetch("/api/google/sheets", { cache: "no-store" });
@@ -2146,6 +2549,74 @@ function Files({
         ＋ 새 자료 추가
         <input type="file" multiple onChange={(e) => add(e.target.files)} />
       </label>
+      {!documentIndex && (
+        <div className="setting block documentIndexImport">
+          <b>내 문서 정리표 가져오기</b>
+          <span>변환 ZIP 안의 `전체문서_분석색인.json`을 선택하면 이 브라우저에만 보관됩니다.</span>
+          <label className="upload">분석표 선택<input type="file" accept=".json,application/json" onChange={(event) => importDocumentIndex(event.target.files)} /></label>
+        </div>
+      )}
+      {documentIndex && (
+        <div className="setting block documentIndex">
+          <div className="documentIndexHead">
+            <div>
+              <b>한글 문서 전체 정리표</b>
+              <span>
+                전체 {documentIndex.documents.length}개 중 {filteredDocuments.length}개 표시
+              </span>
+            </div>
+            <label>
+              <b>찾을 항목</b>
+              <select value={indexFilter} onChange={(event) => setIndexFilter(event.target.value)}>
+                <option value="전체">전체</option>
+                {documentIndex.keywords.map((keyword) => (
+                  <option value={keyword} key={keyword}>{keyword}</option>
+                ))}
+                <option value="직접 입력">직접 입력</option>
+              </select>
+            </label>
+            {indexFilter === "직접 입력" && (
+              <label>
+                <b>직접 입력</b>
+                <input
+                  type="search"
+                  value={directFilter}
+                  onChange={(event) => setDirectFilter(event.target.value)}
+                  placeholder="예: 당뇨 합병증 또는 혈관"
+                  autoFocus
+                />
+              </label>
+            )}
+          </div>
+          <div className="documentTableWrap">
+            <table className="documentTable">
+              <thead>
+                <tr>
+                  <th>번호</th><th>문서 이름</th><th>형식</th><th>찾은 항목</th><th>내용 요약</th><th>상태</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredDocuments.slice(0, 100).map((document) => (
+                  <tr key={`${document.번호}-${document.원본경로}`}>
+                    <td>{document.번호}</td>
+                    <td>{document.원본경로}</td>
+                    <td>{document.원본형식}</td>
+                    <td>{document.키워드 || "-"}</td>
+                    <td>{document.요약}</td>
+                    <td>{document.상태}</td>
+                  </tr>
+                ))}
+                {!filteredDocuments.length && (
+                  <tr><td colSpan={6}>해당 항목이 들어 있는 문서가 없습니다.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {filteredDocuments.length > 100 && <small>화면에는 앞의 100개를 표시합니다.</small>}
+          <small className="warn">이 표는 문서에 들어 있는 단어를 찾는 기능이며 질병의 진단이나 치료 판단을 대신하지 않습니다.</small>
+          <button onClick={async () => { await deleteFileBlob("private-document-index"); setDocumentIndex(null); }}>이 브라우저에서 정리표 삭제</button>
+        </div>
+      )}
       <div className="setting block">
         <b>Google Sheets 가져오기</b>
         <span>내 Google Sheets를 읽기 전용으로 선택해 Excel 사본으로 가져옵니다.</span>
@@ -2715,7 +3186,8 @@ function TaskFlow({
   const isStudent = !!recordType;
   const count = store.files
     .filter((x) => task.fileIds.includes(x.id))
-    .reduce((n, x) => n + (x.students?.length || 0), 0);
+    .reduce((n, x) => n + (x.students?.length || 0), 0) ||
+    (isStudent && task.request.trim() ? 1 : 0);
   const next = () => {
     if (task.step === 1) change({ step: 2 });
     else if (task.step === 2) plan();
@@ -2887,11 +3359,9 @@ function TaskFlow({
                 선택한 자료에서 이름과 소감문이 확인된 학생은 {count}명입니다.
               </p>
               <ul>
-                <li>1안은 교사가 확인할 수 있는 관찰과 활동 근거 중심입니다.</li>
-                <li>
-                  2안은 확인된 근거에서 이어지는 성장과 발전 가능성을 강조합니다.
-                </li>
-                <li>3안은 1안과 2안을 자연스럽게 다시 구성한 최종 추천문입니다.</li>
+                <li>각 문안은 200자 이상이며 학생의 서로 다른 경험을 근거로 작성합니다.</li>
+                <li>세 문안은 추천 순위 없이 같은 비중으로 제시합니다.</li>
+                <li>자연스러운 교사 관찰문을 먼저 만들고 기록형 종결을 적용합니다.</li>
                 <li>
                   쉼표는 사용하지 않으며 모든 완결 문장을 마침표로 끝냅니다.
                 </li>
@@ -2925,26 +3395,7 @@ function TaskFlow({
             <h3>{task.workResult?.title || task.result}</h3>
             {task.workResult?.text && <p>{task.workResult.text}</p>}
             {task.workResult?.kind === "table" && (
-              <div className="tablePreview">
-                <table>
-                  <thead>
-                    <tr>
-                      {task.workResult.columns?.map((x) => (
-                        <th key={x}>{x}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {task.workResult.rows?.slice(0, 20).map((row, i) => (
-                      <tr key={i}>
-                        {row.map((x, j) => (
-                          <td key={j}>{x}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <SearchableResultTable result={task.workResult} />
             )}
             {task.workResult?.validation.map((x) => (
               <p className="good" key={x}>
@@ -2987,6 +3438,92 @@ function TaskFlow({
   );
 }
 
+function SearchableResultTable({ result }: { result: WorkResult }) {
+  const columns = result.columns || [];
+  const rows = previewTableRows(result);
+  const [column, setColumn] = useState("전체 항목");
+  const [choice, setChoice] = useState("전체");
+  const [direct, setDirect] = useState("");
+  const columnIndex = columns.indexOf(column);
+  const sourceValues = Array.from(
+    new Set(
+      rows
+        .flatMap((row) => (columnIndex < 0 ? row : [row[columnIndex]]))
+        .map(String)
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 80);
+  const search =
+    choice === "직접 입력"
+      ? direct.trim()
+      : choice === "전체"
+        ? ""
+        : choice;
+  const filtered = rows.filter((row) => {
+    if (!search) return true;
+    const values = columnIndex < 0 ? row : [row[columnIndex]];
+    return values.some((value) =>
+      String(value).toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+    );
+  });
+  return (
+    <div className="resultSearch">
+      <div className="resultSearchTools">
+        <label>
+          <b>찾을 항목</b>
+          <select
+            value={column}
+            onChange={(event) => {
+              setColumn(event.target.value);
+              setChoice("전체");
+              setDirect("");
+            }}
+          >
+            <option>전체 항목</option>
+            {columns.map((value) => <option key={value}>{value}</option>)}
+          </select>
+        </label>
+        <label>
+          <b>찾을 내용</b>
+          <select value={choice} onChange={(event) => setChoice(event.target.value)}>
+            <option>전체</option>
+            {sourceValues.map((value) => (
+              <option key={value} value={value}>
+                {value.length > 45 ? `${value.slice(0, 45)}…` : value}
+              </option>
+            ))}
+            <option value="직접 입력">직접 입력</option>
+          </select>
+        </label>
+        {choice === "직접 입력" && (
+          <label>
+            <b>직접 입력</b>
+            <input
+              type="search"
+              value={direct}
+              onChange={(event) => setDirect(event.target.value)}
+              placeholder="질병·부상·보험 조건 또는 전형 조건 입력"
+            />
+          </label>
+        )}
+        <strong>전체 {rows.length}개 중 {filtered.length}개</strong>
+      </div>
+      <div className="tablePreview">
+        <table>
+          <thead><tr>{columns.map((value, index) => <th key={`${index}-${value}`}>{value}</th>)}</tr></thead>
+          <tbody>
+            {filtered.slice(0, 100).map((row, rowIndex) => (
+              <tr key={rowIndex}>{row.map((value, cellIndex) => <td key={cellIndex}>{value}</td>)}</tr>
+            ))}
+            {!filtered.length && <tr><td colSpan={Math.max(1, columns.length)}>일치하는 결과가 없습니다.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {filtered.length > 100 && <small>화면에는 검색 결과 앞의 100개를 표시합니다.</small>}
+    </div>
+  );
+}
 function WorkExplanation({ result }: { result: WorkResult }) {
   const [view, setView] = useState<"how" | "formula" | "beginner" | "check">(
     "how",
@@ -2999,27 +3536,7 @@ function WorkExplanation({ result }: { result: WorkResult }) {
       { type: "formula" }
     > => action.type === "formula",
   );
-  const descriptions = actions.map((action) => {
-    if (action.type === "replace")
-      return `${action.sheet} 시트 ${action.range || "사용 범위"}에서 ‘${action.find}’을 ‘${action.replace}’으로 바꿈.`;
-    if (action.type === "set")
-      return `${action.sheet} 시트 ${action.cell}에 ‘${action.value}’을 입력함.`;
-    if (action.type === "formula")
-      return `${action.sheet} 시트 ${action.cell}에 =${action.formula.replace(/^=/, "")} 계산식을 입력함.`;
-    if (action.type === "highlight")
-      return `${action.sheet} 시트 ${action.range || "사용 범위"}에서 ‘${action.value}’과 같은 셀을 색으로 표시함.`;
-    if (action.type === "conditional")
-      return `${action.sheet} 시트 ${action.range}에 입력값에 따라 자동으로 바뀌는 조건부서식을 설정함.`;
-    if (action.type === "dataValidation")
-      return `${action.sheet} 시트 ${action.range}에 목록에서 고르는 드롭다운을 설정함.`;
-    if (action.type === "sort")
-      return `${action.sheet} 시트 ${action.range}을 ${action.column}번째 열 기준 ${action.order === "desc" ? "내림차순" : "오름차순"}으로 정렬함.`;
-    if (action.type === "filter")
-      return `${action.sheet} 시트 ${action.range}의 제목 행에 필터를 설정함.`;
-    if (action.type === "removeDuplicates")
-      return `${action.sheet} 시트 ${action.range}에서 ${action.columns.join(" · ")}번째 열이 같은 중복 행을 제거함.`;
-    return `${action.sheet} 시트 ${action.range}을 행과 열을 바꾸어 ${action.targetSheet} 시트 ${action.targetCell}부터 배치함.`;
-  });
+  const descriptions = actions.map(excelActionDescription);
   const tutorial = (action: (typeof formulas)[number]) => {
     const formula = action.formula.replace(/^=/, "");
     const refs = formula.match(/\$?[A-Z]{1,3}\$?[1-9][0-9]*/g) || [];
@@ -3107,39 +3624,37 @@ function StudentReview({
 }) {
   const [i, setI] = useState(0),
     d = drafts[i];
-  const reviewed = drafts.filter((x) => x.reviewed).length;
-  const finalCharacters = Array.from(d.finalText.trim()).length;
-  const finalBytes = new TextEncoder().encode(d.finalText.trim()).length;
+  const finalProblems = studentDraftProblems(d.finalText);
+  const reviewedCount = drafts.filter((draft) => draft.reviewed).length;
   const choose = (
-    selected: "fact" | "inferred" | "recommended" | "merged",
-  ) => {
-    const finalText =
-      selected === "fact"
-        ? d.factDraft
-        : selected === "inferred"
-          ? d.inferredDraft
-          : selected === "recommended"
-            ? d.recommendedDraft || d.factDraft
-            : d.recommendedDraft || `${d.factDraft} ${d.inferredDraft}`;
-    change(i, { selected, finalText });
-  };
+    selected: NonNullable<StudentDraft["selected"]>,
+    finalText: string,
+  ) => change(i, { selected, finalText, reviewed: false });
   return (
     <div className="studentReview">
       <div className="reviewTop">
         <div>
-          <h2>학생별 세 가지 초안</h2>
-          <span>
-            {reviewed}/{drafts.length}명 확인 완료
-          </span>
+          <h2>학생별 세 가지 문안</h2>
+          <span>전체 {drafts.length}명</span>
         </div>
         <select value={i} onChange={(e) => setI(Number(e.target.value))}>
           {drafts.map((x, n) => (
             <option key={n} value={n}>
               {n + 1}. {x.name}
-              {x.reviewed ? " ✓" : ""}
             </option>
           ))}
         </select>
+      </div>
+      <div className="sourceBox">
+        <b>적용한 생기부 작성 기준</b>
+        <p>① 2026학년도 학교생활기록부 기재요령</p>
+        <p>② 사용자가 제공한 PDF의 128쪽부터 150쪽까지 작성 분석</p>
+        <p>③ 사용자와 함께 정한 문장·분량·문장부호·세 가지 문안 기준</p>
+        <small>
+          공식 기재요령을 위반하지 않는 범위에서 세 기준을 함께 적용합니다.
+          교사 관찰·활동 내용·학생 소감에는 고정된 우선순위를 두지 않고
+          실제 입력 내용과 구체성에 따라 반영합니다.
+        </small>
       </div>
       <div className={validation.length ? "warning" : "validationOk"}>
         <b>전체 학생 문장 중복 검사</b>
@@ -3149,72 +3664,70 @@ function StudentReview({
           <p>높은 유사도의 문장 쌍이 발견되지 않았습니다.</p>
         )}
       </div>
-      <div className="sourceBox">
-        <b>{d.name} 학생 원문</b>
-        <p>{d.source}</p>
-      </div>
       <div className="draftChoices">
         <article className={d.selected === "fact" ? "picked" : ""}>
-          <h3>1안 관찰 중심</h3>
+          <h3>1안</h3>
           <p>{d.factDraft}</p>
           <small>{Array.from(d.factDraft.trim()).length}자</small>
-          <button onClick={() => choose("fact")}>1안 선택</button>
+          <button onClick={() => choose("fact", d.factDraft)}>1안 선택</button>
         </article>
         <article className={d.selected === "inferred" ? "picked" : ""}>
-          <h3>2안 성장 중심</h3>
+          <h3>2안</h3>
           <p>{d.inferredDraft}</p>
           <small>{Array.from(d.inferredDraft.trim()).length}자</small>
-          {d.inferredParts?.length > 0 && (
+          {!!d.inferredParts?.length && (
             <div className="inference">
-              <b>교사 확인이 필요한 유추</b>
-              {d.inferredParts.map((x, n) => (
-                <span key={n}>{x}</span>
-              ))}
+              <b>교사 확인이 필요한 연결 표현</b>
+              {d.inferredParts.map((part) => <span key={part}>{part}</span>)}
             </div>
           )}
-          <button onClick={() => choose("inferred")}>2안 선택</button>
+          <button onClick={() => choose("inferred", d.inferredDraft)}>2안 선택</button>
         </article>
         <article className={d.selected === "recommended" ? "picked" : ""}>
-          <h3>3안 최종 추천</h3>
+          <h3>3안</h3>
           <p>{d.recommendedDraft || "3안은 새로 생성할 때 표시됩니다."}</p>
           <small>{Array.from((d.recommendedDraft || "").trim()).length}자</small>
           {!!d.recommendedInferredParts?.length && (
             <div className="inference">
-              <b>교사 확인이 필요한 유추</b>
-              {d.recommendedInferredParts.map((x, n) => (
-                <span key={n}>{x}</span>
-              ))}
+              <b>교사 확인이 필요한 연결 표현</b>
+              {d.recommendedInferredParts.map((part) => <span key={part}>{part}</span>)}
             </div>
           )}
-          <button onClick={() => choose("recommended")}>3안 선택</button>
+          <button
+            disabled={!d.recommendedDraft}
+            onClick={() => choose("recommended", d.recommendedDraft || "")}
+          >
+            3안 선택
+          </button>
         </article>
       </div>
-      <button onClick={() => choose("merged")}>AI 추천문을 바탕으로 직접 수정</button>
-      <h3>교사 최종 수정본</h3>
-      <textarea
-        value={d.finalText}
-        onChange={(e) =>
-          change(i, { finalText: e.target.value, reviewed: false })
-        }
-      />
-      <div className="validation">
-        <span
-          className={
-            finalCharacters >= 200 &&
-            finalCharacters <= 500 &&
-            finalBytes <= 1500
-              ? "good"
-              : "bad"
+      <div className="sourceBox">
+        <b>교사가 최종 확인할 문장</b>
+        <textarea
+          value={d.finalText}
+          placeholder="위 세 가지 문안 중 하나를 선택한 뒤 교사가 직접 수정하세요."
+          onChange={(event) =>
+            change(i, {
+              finalText: event.target.value,
+              selected: "merged",
+              reviewed: false,
+            })
           }
+        />
+        <div className="validation">
+          {finalProblems.length ? (
+            finalProblems.map((problem) => <span className="bad" key={problem}>{problem}</span>)
+          ) : (
+            <span className="good">문장 기준을 통과했습니다.</span>
+          )}
+        </div>
+        <button
+          className="primary"
+          disabled={!d.finalText || finalProblems.length > 0}
+          onClick={() => change(i, { reviewed: true })}
         >
-          {finalCharacters}자 · {finalBytes}바이트
-        </span>
-        <span className={d.finalText.includes(",") ? "bad" : "good"}>
-          {d.finalText.includes(",") ? "쉼표가 있습니다" : "쉼표 없음"}
-        </span>
-        <span className={d.finalText.trim().endsWith(".") ? "good" : "bad"}>
-          {d.finalText.trim().endsWith(".") ? "마침표 확인" : "마침표 필요"}
-        </span>
+          {d.reviewed ? "교사 확인 완료" : "이 학생 문장 확인"}
+        </button>
       </div>
       <div className="reviewNav">
         <button disabled={i === 0} onClick={() => setI(i - 1)}>
@@ -3222,27 +3735,16 @@ function StudentReview({
         </button>
         <button
           className="primary"
-          disabled={
-            d.finalText.includes(",") ||
-            !d.finalText.trim().endsWith(".") ||
-            finalCharacters < 200 ||
-            finalCharacters > 500 ||
-            finalBytes > 1500
-          }
-          onClick={() => {
-            change(i, { reviewed: true });
-            if (i < drafts.length - 1) setI(i + 1);
-          }}
+          disabled={i === drafts.length - 1}
+          onClick={() => setI(i + 1)}
         >
-          확인하고 다음 학생 →
+          다음 학생 →
         </button>
       </div>
       <div className="downloadBar">
-        <b>
-          전체 {drafts.length}명 중 {reviewed}명 확인
-        </b>
-        <button disabled={reviewed !== drafts.length} onClick={download}>
-          교사 수정본 다운로드
+        <b>교사 확인 {reviewedCount}/{drafts.length}명</b>
+        <button disabled={reviewedCount !== drafts.length} onClick={download}>
+          세 가지 문안과 최종 문장 다운로드
         </button>
       </div>
     </div>
@@ -3260,9 +3762,13 @@ function PlanView({ p, student = false }: { p?: Plan; student?: boolean }) {
           <dt>사용 자료</dt>
           <dd>{p.materials.join(" · ") || "입력한 활동 내용"}</dd>
           <dt>제시할 결과</dt>
-          <dd>1안 관찰 중심 · 2안 성장 중심 · 3안 최종 추천</dd>
+          <dd>1안 · 2안 · 3안</dd>
+          <dt>작성 기준</dt>
+          <dd>2026학년도 학교생활기록부 기재요령 → 사용자 제공 PDF 128~150쪽 작성 분석 → 함께 정한 문장 기준을 모두 적용</dd>
+          <dt>입력 근거</dt>
+          <dd>교사 관찰 · 활동 내용 · 학생 소감에 고정 우선순위를 두지 않고 실제 입력 내용에 따라 반영</dd>
           <dt>다음 과정</dt>
-          <dd>세 가지 초안 생성 → 교사 선택·수정 → 문장 검증</dd>
+          <dd>세 가지 문안 생성 → 문장과 중복 검증 → 결과 확인</dd>
         </dl>
         {p.limitation && <p className="warning">{p.limitation}</p>}
       </div>
